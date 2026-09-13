@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeek-acd"
+version = "0.1.0"
+description = "DQN + zero-sum stochastic game (minimax-Q) Active Cyber Defense agent over Zeek telemetry"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "gymnasium",
+    "torch",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
