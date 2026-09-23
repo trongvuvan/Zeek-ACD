@@ -26,6 +26,7 @@ also contain real background browsing.
 from __future__ import annotations
 
 import argparse
+import gzip
 import ipaddress
 import json
 import shutil
@@ -72,9 +73,13 @@ def read_tsv(path: Path) -> tuple[list[str], list[list[str]]]:
     (a capture with no DNS simply has no dns.log)."""
     if not path.exists():
         return [], []
+    return parse_tsv_text(path.read_text(errors="replace"))
+
+
+def parse_tsv_text(text: str) -> tuple[list[str], list[list[str]]]:
     fields: list[str] = []
     rows: list[list[str]] = []
-    for line in path.read_text(errors="replace").splitlines():
+    for line in text.splitlines():
         if line.startswith("#fields"):
             fields = line.split("\t")[1:]
         elif line.startswith("#"):
@@ -90,11 +95,30 @@ def read_log(directory: Path, name: str) -> list[dict[str, str]]:
     A ``zeek -r`` run writes TSV; a zeekctl deployment with
     ``LogAscii::use_json = T`` writes one JSON object per line. Live logs
     here are the JSON kind, pcap replays the TSV kind, and both have to be
-    labelable."""
+    labelable.
+
+    A rotated log directory has no ``conn.log`` at all -- zeekctl archives
+    it as ``conn.<from>-<to>.log.gz``, often several per day and not
+    necessarily all in the same format. Those are read and concatenated.
+    """
+    stem = name[:-4] if name.endswith(".log") else name
     path = directory / name
     if not path.exists():
-        return []
-    text = path.read_text(errors="replace")
+        rotated = sorted(directory.glob(f"{stem}.*.log.gz")) + \
+                  sorted(directory.glob(f"{stem}.*.log"))
+        records: list[dict[str, str]] = []
+        for part in rotated:
+            records.extend(_read_log_file(part))
+        return records
+    return _read_log_file(path)
+
+
+def _read_log_file(path: Path) -> list[dict[str, str]]:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", errors="replace") as fh:
+            text = fh.read()
+    else:
+        text = path.read_text(errors="replace")
     if text.lstrip().startswith("{"):
         records = []
         for line in text.splitlines():
@@ -107,7 +131,7 @@ def read_log(directory: Path, name: str) -> list[dict[str, str]]:
                 continue
             records.append({k: ("" if v is None else str(v)) for k, v in record.items()})
         return records
-    fields, rows = read_tsv(path)
+    fields, rows = parse_tsv_text(text)
     return [dict(zip(fields, row)) for row in rows]
 
 
@@ -256,7 +280,8 @@ def merge_reports(ioc_dir: Path, pattern: str = "*.txt") -> IocSet:
 
 def classify_record(record: dict, iocs: IocSet, uid_domains: dict[str, set[str]],
                     dns_ip_classes: dict[str, AttackerClass],
-                    unmatched: str) -> AttackerClass | None:
+                    unmatched: str,
+                    benign_sources: frozenset[str] = frozenset()) -> AttackerClass | None:
     """The class for one connection, or None when ``--unmatched drop`` says
     to throw it away."""
     resp_h = record.get("id.resp_h")
@@ -273,6 +298,11 @@ def classify_record(record: dict, iocs: IocSet, uid_domains: dict[str, set[str]]
         cls = dns_ip_classes[resp_h]
     if cls is not None:
         return cls
+    # Hosts named with --benign-src are known not to be replaying attack
+    # traffic, so what they do that matches no indicator is ordinary
+    # traffic -- which is where outbound HTTPS to real sites comes from.
+    if record.get("id.orig_h") in benign_sources:
+        return AttackerClass.BENIGN
     if unmatched == "drop":
         return None
     return AttackerClass.OTHER_MALICIOUS if unmatched == "malicious" else AttackerClass.BENIGN
@@ -293,7 +323,8 @@ def write_labeled_tsv(rows: list[tuple[dict, AttackerClass]], path: Path) -> Non
     path.write_text("\n".join(lines) + "\n")
 
 
-def label_log_dir(log_dir: Path, iocs: IocSet, unmatched: str) -> tuple[list, Counter]:
+def label_log_dir(log_dir: Path, iocs: IocSet, unmatched: str,
+                  benign_sources: frozenset[str] = frozenset()) -> tuple[list, Counter]:
     """Labels an existing Zeek log directory (TSV or JSON), e.g. a live
     spool directory, rather than a pcap we just ran Zeek over."""
     conn_records = read_log(log_dir, "conn.log")
@@ -309,7 +340,8 @@ def label_log_dir(log_dir: Path, iocs: IocSet, unmatched: str) -> tuple[list, Co
                               for d in uid_domains.get(record.get("uid") or "", ())))
             if not matched:
                 counts["unmatched-external"] += 1
-        cls = classify_record(record, iocs, uid_domains, dns_ip_classes, unmatched)
+        cls = classify_record(record, iocs, uid_domains, dns_ip_classes, unmatched,
+                              benign_sources)
         if cls is None:
             continue
         counts[cls.name] += 1
@@ -330,6 +362,11 @@ def parse_args() -> argparse.Namespace:
                          "Traffic belonging to the other scenarios then matches nothing and is "
                          "handled by --unmatched, which is how a live log gets split into a "
                          "training half and a held-out half by scenario")
+    p.add_argument("--benign-src", action="append", default=None,
+                    help="a source IP whose unmatched traffic is ordinary traffic rather "
+                         "than an unknown; repeat per host. Use it for hosts you know are "
+                         "not replaying attack captures -- their normal browsing is the "
+                         "benign class the malware captures don't contain")
     p.add_argument("--out-file", default=None,
                     help="where --zeek-log-dir writes its labeled log "
                          "(default: <out-dir>/live/conn.log.labeled)")
@@ -347,7 +384,8 @@ def main() -> None:
 
     if args.zeek_log_dir:
         iocs = merge_reports(Path(args.ioc_dir), args.ioc_glob)
-        rows, counts = label_log_dir(Path(args.zeek_log_dir), iocs, args.unmatched)
+        rows, counts = label_log_dir(Path(args.zeek_log_dir), iocs, args.unmatched,
+                                     frozenset(args.benign_src or ()))
         if not rows:
             raise SystemExit(f"no conn.log records found in {args.zeek_log_dir}")
         out_file = Path(args.out_file or Path(args.out_dir) / "live" / "conn.log.labeled")

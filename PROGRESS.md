@@ -122,17 +122,64 @@ Gán nhãn theo 3 bước: IP đích khớp indicator → SNI/HTTP Host theo `ui
 DNS trong chính capture đó trả về cho domain indicator. Trên 23 pcap chỉ có
 **1/403 flow ngoài mạng không khớp** indicator nào.
 
+## Kết quả âm đã thử (đừng lặp lại)
+
+### v5: thêm traffic benign của máy thật làm model **tệ đi**
+
+Log Zeek đã xoay vòng có 222 kết nối của máy thật `192.168.6.135`, trong đó 323
+flow ra cổng 443 — đúng loại benign HTTPS mà tập train đang thiếu. Đã thêm vào
+train (`data/rot2025_*`, `--benign-src 192.168.6.135`).
+
+Kết quả: FP trên tập giữ lại sạch **MTA-2026 tăng từ 0% lên 75%** (v4 ep500 so
+với v5 ep600), chỉ đổi lấy 0.04 vs 0.12 trên `live-now`. Phát hiện vẫn 1.00.
+
+Lý do: traffic đó có `conn_state` là `SHR`/`OTH`/`RSTO` — mạng `192.168.6.135`
+bị mất gói nên Zeek chỉ thấy một phần mỗi kết nối, và `service` không xác định
+được. Model dịch khái niệm "sạch" về phía kết nối đứt đoạn rồi quay ra nghi ngờ
+các phiên hoàn chỉnh. **Dữ liệu mất gói không thay được dữ liệu benign sạch** —
+muốn đóng lỗ hổng này phải có capture duyệt web bình thường mà Zeek thấy trọn
+vẹn (`conn_state=SF`).
+
+### Self-play: hữu ích để chẩn đoán, **phản tác dụng** khi dùng để train
+
+Đã cho attacker khả năng né thật (`selfplay.py`: hành động = lớp × chế độ né,
+5×5=25; env tự duy trì `ConnContext` trên dòng nó phát ra; episode kết thúc theo
+cả số bước lẫn thời gian mô phỏng nên đi chậm phải trả giá). Đo trên 120 bước:
+`none` cho beacon đều tăm tắp (`ctx_pair_iat_cv`=0.017), `jitter` phá sạch tính
+đều (→0.532) mà vẫn lọt 115/120, `spread` hạ `ctx_pair_share` 0.614→0.014 mà
+không mất gì, `slow` chỉ lọt 10/120.
+
+**Đo độ dễ bị khai thác** (defender v4 đóng băng, attacker học 400 episode):
+attacker chỉ đạt `+0.035`, bị chặn 80–97%, phát hiện C2/DOS vẫn 1.00. Nhưng
+**toàn bộ lợi nhuận của nó đến từ false positive, không phải né tránh**: ở
+ep150 nó chọn `BENIGN` 96% — không tấn công gì — mà vẫn ăn `+0.047` vì defender
+ra tay với 73% traffic sạch. Đây là một đòn tấn công thật: tạo traffic vô hại
+có hình dạng khiến IDS chặn nhầm, biến defender thành công cụ từ chối dịch vụ.
+
+**Train chung** (`--defender vanilla --defender-init` v4): ep50–200 giữ nguyên
+chất lượng v4 (self-play chưa kịp đổi gì), nhưng từ ep250 khi defender thật sự
+học từ dòng tổng hợp thì **hỏng trên traffic thật** — FP trên `live-now` vọt
+lên 0.87–0.96, có lúc phát hiện tụt còn 0.74.
+
+Lý do: môi trường self-play phát traffic tổng hợp (một nguồn cố định beacon tới
+một đích cố định) lệch quá xa phân phối thật; defender khớp vào môi trường giả.
+Muốn dùng self-play để train thì phải **xen kẽ episode dữ liệu thật** với
+episode self-play, hoặc cho env phát traffic theo đúng thành phần dòng thật.
+
 ## Việc tiếp theo
 
 1. Tập BENIGN hiện gần như chỉ có DNS/NTP tới resolver nội bộ; **chưa có HTTPS
-   bình thường ra Internet**. Cần thêm capture duyệt web sạch rồi đo lại FP —
-   đây là giới hạn lớn nhất còn lại của con số FP 7%.
+   bình thường ra Internet mà Zeek thấy trọn vẹn**. Cần capture duyệt web sạch
+   (`conn_state=SF`, có `service=ssl`) rồi đo lại FP — đây là giới hạn lớn nhất
+   còn lại của con số FP 7%. Xem phần "Kết quả âm" ở trên: lấy tạm traffic bị
+   mất gói thì phản tác dụng.
 2. Chọn checkpoint đang dựa trên chính các tập giữ lại (ep500 chọn theo
    `live_now`). Có thêm dữ liệu thì nên tách hẳn validation và test.
 3. `dqn_v4` đang train bằng `payoffs/low_fp.json` nhưng chấm điểm bằng bảng mặc
    định (để so được giữa các bản). Nếu chốt dùng bảng low_fp thì nên chấm bằng
    chính nó.
-4. Chưa thử `train_selfplay.py` với defender DQN đã tốt — đo xem attacker học
-   được cách né tới đâu.
+4. Nếu quay lại self-play: xen kẽ episode dữ liệu thật với episode self-play
+   (xem phần "Kết quả âm"). Riêng phép đo độ dễ bị khai thác
+   (`--defender frozen`) thì dùng được ngay và nên chạy lại sau mỗi lần train.
 5. Chưa bật enforcement thật (`--executor nftables --live-enforce`). Với FP 7%
    trên BENIGN thì **chưa nên bật**.
