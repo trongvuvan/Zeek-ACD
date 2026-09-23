@@ -5,3 +5,4 @@ checkpoints/
 *.jsonl
 *.pt
 *.egg-info/
+data/

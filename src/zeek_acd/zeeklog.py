@@ -5,9 +5,17 @@ header conventions Zeek writes for any ``*.log`` file (``#separator``,
 ``#fields``, ``#types``, ...). The same parser is reused for offline
 training data and for tailing a live ``conn.log``.
 
-IoT-23's ``conn.log.labeled`` files append two extra tab-separated columns
-(``label`` and ``detailed-label``) after ``tunnel_parents`` without listing
-them in the ``#fields`` header. That quirk is handled explicitly below.
+IoT-23's ``conn.log.labeled`` files carry two extra columns (``label`` and
+``detailed-label``) after ``tunnel_parents``, in one of several shapes
+depending on the mirror/scenario:
+
+- joined to ``tunnel_parents`` by runs of spaces instead of tabs, in both
+  the ``#fields`` header and the data rows;
+- proper tab-separated columns, but named ``det_label`` in the header;
+- absent from ``#fields`` entirely (callers pass ``extra_fields``).
+
+All three are normalized below so records always expose ``label`` and
+``detailed-label``.
 """
 
 from __future__ import annotations
@@ -18,6 +26,9 @@ from typing import Iterator, Optional, TextIO
 
 UNSET = "-"
 EMPTY = "(empty)"
+
+# Header names some IoT-23 files use for the canonical column names.
+FIELD_ALIASES = {"det_label": "detailed-label"}
 
 
 @dataclass
@@ -59,9 +70,13 @@ def parse_header(lines: list[str], extra_fields: Optional[list[str]] = None) -> 
         elif key == "path":
             header.path = parts[1]
         elif key == "fields":
-            header.fields = parts[1:]
+            # Space-joined names (IoT-23 quirk) are split into separate columns.
+            names = [n for part in parts[1:] for n in part.split()]
+            header.fields = [FIELD_ALIASES.get(n, n) for n in names]
         elif key == "types":
             header.types = parts[1:]
+    # Extra names already declared in the header must not be appended again.
+    header.extra_fields = [f for f in header.extra_fields if f not in header.fields]
     return header
 
 
@@ -71,6 +86,9 @@ def parse_row(header: ZeekLogHeader, line: str) -> Optional[dict[str, str]]:
         return None
     values = line.split(header.separator)
     names = header.fields + header.extra_fields
+    if len(values) < len(names) and values and " " in values[-1]:
+        # IoT-23 rows whose trailing columns are joined by spaces, not tabs.
+        values = values[:-1] + values[-1].split()
     if len(values) < len(header.fields):
         return None
     record = dict(zip(names, values))
@@ -85,13 +103,13 @@ class ZeekLogFile:
     def __init__(self, fh: TextIO, extra_fields: Optional[list[str]] = None):
         self._fh = fh
         header_lines: list[str] = []
-        pos = 0
-        for raw in fh:
-            if raw.startswith("#"):
-                header_lines.append(raw)
-                pos = fh.tell()
-            else:
+        # readline() rather than iteration: text-file iteration disables tell().
+        while True:
+            pos = fh.tell()
+            raw = fh.readline()
+            if not raw.startswith("#"):
                 break
+            header_lines.append(raw)
         fh.seek(pos)
         self.header = parse_header(header_lines, extra_fields=extra_fields)
 

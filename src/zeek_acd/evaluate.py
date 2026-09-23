@@ -4,7 +4,7 @@ rates broken down by the true attacker class."""
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Callable, Optional
 
 import numpy as np
@@ -21,6 +21,7 @@ def rollout(
     per_class_total = defaultdict(int)
     per_class_acted = defaultdict(int)  # action != ALLOW
     per_class_reward = defaultdict(float)
+    per_class_actions = defaultdict(Counter)
     total_reward = 0.0
     total_steps = 0
 
@@ -34,6 +35,7 @@ def rollout(
             cls = info["attacker_class"]
             per_class_total[cls] += 1
             per_class_reward[cls] += reward
+            per_class_actions[cls][int(action)] += 1
             if action != int(DefenderAction.ALLOW):
                 per_class_acted[cls] += 1
             total_reward += reward
@@ -52,6 +54,11 @@ def rollout(
             "n": n,
             "action_rate": per_class_acted.get(int(cls), 0) / n,
             "avg_reward": per_class_reward.get(int(cls), 0.0) / n,
+            # which actions the policy actually chose, most frequent first
+            "actions": {
+                DefenderAction(a).name: round(k / n, 3)
+                for a, k in per_class_actions[int(cls)].most_common()
+            },
         }
     return result
 
@@ -76,6 +83,6 @@ def summarize(name: str, result: dict) -> str:
     for cls_name, stats in result["per_class"].items():
         lines.append(
             f"  {cls_name:16s} n={stats['n']:5d}  action_rate={stats['action_rate']:.2f}  "
-            f"avg_reward={stats['avg_reward']:+.3f}"
+            f"avg_reward={stats['avg_reward']:+.3f}  {stats.get('actions', {})}"
         )
     return "\n".join(lines)

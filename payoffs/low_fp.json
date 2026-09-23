@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Payoff table tuned so a false positive actually costs something.",
+    "With the default table a wrong LOG_ALERT on benign traffic costs -0.05",
+    "while a correct one on an attack pays +0.20, so alerting on everything",
+    "scores almost as well as being right -- training wandered between a 1%",
+    "and a 96% false-positive rate with no change in reward. Here every",
+    "action on benign traffic costs about four times more, while the",
+    "detection payoffs are unchanged, so precision has to be earned.",
+    "Rows = ALLOW, LOG_ALERT, RATE_LIMIT, BLOCK_SRC, ISOLATE_HOST, DECEIVE.",
+    "Columns = BENIGN, RECON, DOS, C2, OTHER_MALICIOUS."
+  ],
+  "table": [
+    [ 0.00, -1.00, -1.00, -1.00, -1.00],
+    [-0.20,  0.30,  0.10,  0.20,  0.20],
+    [-0.60,  0.50,  0.60,  0.10,  0.20],
+    [-1.20,  0.70,  0.90,  0.60,  0.70],
+    [-1.60,  0.60,  0.50,  1.00,  0.80],
+    [-0.80,  0.80,  0.10,  0.40,  0.40]
+  ]
+}

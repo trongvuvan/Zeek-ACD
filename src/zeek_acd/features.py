@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .context import CONTEXT_FEATURES
+
 UNSET = "-"
 
 PROTOS = ["tcp", "udp", "icmp"]
@@ -33,6 +35,9 @@ CONTINUOUS_FEATURES = [
     "log_resp_bytes",
     "bytes_ratio",
     "history_len",
+    # Cross-flow context (see context.py). Zeros when a record has not been
+    # through a context pass, so a bare conn.log record still works.
+    *CONTEXT_FEATURES,
 ]
 
 FEATURE_DIM = (
@@ -89,6 +94,7 @@ def raw_feature_vector(record: dict[str, str]) -> np.ndarray:
         math.log2(resp_bytes + 1.0),
         (orig_bytes + 1.0) / (resp_bytes + 1.0),
         float(len(history)),
+        *(_f(record.get(name)) for name in CONTEXT_FEATURES),
     ]
 
     proto = _one_hot((record.get("proto") or "").lower(), PROTOS)
