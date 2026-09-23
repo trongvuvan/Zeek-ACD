@@ -1,6 +1,6 @@
 # Tiến trình zeek-acd
 
-Cập nhật: 2026-09-23. Dùng file này để tiếp tục ở phiên sau.
+Cập nhật: 2026-09-24. Dùng file này để tiếp tục ở phiên sau.
 
 ## Trạng thái hiện tại
 
@@ -40,6 +40,46 @@ PYTHONPATH=src .venv/bin/python -u -m zeek_acd.train_dqn \
   --max-records-per-file 15000 --episodes 600 --eps-decay-episodes 400 \
   --eval-every 100 --checkpoint-dir checkpoints/dqn_v4
 ```
+
+### Kiểm tra model
+
+```bash
+# chấm trên một tập có nhãn (flat = mỗi flow một lần, không suppression)
+PYTHONPATH=src .venv/bin/python -m zeek_acd.eval_checkpoint \
+  --checkpoint checkpoints/dqn_v4/agent_best.pt \
+  --normalizer checkpoints/dqn_v4/normalizer_best.json \
+  --data 'data/mta/2026-*/conn.log.labeled' --baselines
+
+# so mọi checkpoint của một lần train trên nhiều tập cùng lúc
+PYTHONPATH=src .venv/bin/python -m zeek_acd.compare_checkpoints \
+  --checkpoint-dir checkpoints/dqn_v4 \
+  --data 'MTA-2026=data/mta/2026-*/conn.log.labeled' \
+  --data 'live-now=data/live_now/conn.log.labeled' --select live-now
+
+# đọc lại nhật ký một lần chạy live, đối chiếu với nhãn
+PYTHONPATH=src .venv/bin/python -m zeek_acd.audit_report \
+  --audit-log checkpoints/dqn_v4/live_audit.jsonl \
+  --labels 'data/live_now/conn.log.labeled' --show 5 --only-wrong
+```
+
+`compare_checkpoints.py` tồn tại vì eval lúc train dao động rất mạnh — trong
+cùng một lần train 600 episode, FP nhảy từ 1% đến 96% mà `avg_reward` gần như
+không đổi. **Đừng mặc định lấy checkpoint cuối.**
+
+### Các thư mục checkpoint
+
+| thư mục | là gì | dùng được? |
+|---|---|---|
+| `checkpoints/iot23/` | minimax-DQN, phiên đầu | không (= baseline LOG_ALERT) |
+| `checkpoints/dqn_iot23/` | DQN chỉ IoT-23, feature cũ 60 chiều | không (không tổng quát) |
+| `checkpoints/dqn_mixed/`, `dqn_v2/`, `dqn_v3/` | các bước trung gian | không |
+| **`checkpoints/dqn_v4/`** | **bản khuyến nghị (`agent_best.pt` = ep500)** | **có** |
+| `checkpoints/dqn_v5/` | thêm benign mất gói | không — xem "Kết quả âm" |
+| `checkpoints/selfplay_v4frozen/` | attacker học đấu v4 đóng băng | chỉ để chẩn đoán |
+| `checkpoints/selfplay_joint/` | train chung | không — hỏng từ ep250 |
+
+Lưu ý: checkpoint trước `dqn_v3` dùng feature cũ (60 hoặc 72 chiều, ngữ cảnh
+tuyệt đối) nên **không nạp được** bằng code hiện tại (71 chiều).
 
 ## Bốn vấn đề đã tìm ra và cách sửa
 
@@ -183,3 +223,23 @@ episode self-play, hoặc cho env phát traffic theo đúng thành phần dòng 
    (`--defender frozen`) thì dùng được ngay và nên chạy lại sau mỗi lần train.
 5. Chưa bật enforcement thật (`--executor nftables --live-enforce`). Với FP 7%
    trên BENIGN thì **chưa nên bật**.
+
+## Trạng thái git
+
+Commit gần nhất là `887ed78` (do người dùng tự commit). Chưa commit:
+`PROGRESS.md`, `src/zeek_acd/pcap_dataset.py`, `src/zeek_acd/selfplay.py`,
+`src/zeek_acd/train_selfplay.py`, và file mới `src/zeek_acd/compare_checkpoints.py`.
+`data/` và `checkpoints/` đã nằm trong `.gitignore`.
+
+## Module trong `src/zeek_acd/` (những cái thêm trong các phiên này)
+
+| file | việc |
+|---|---|
+| `context.py` | đặc trưng liên-flow, **toàn bộ là tỉ lệ/tỉ trọng**, dùng chung offline + live |
+| `iocs.py` | đọc file IOC defang → tập chỉ báo khớp được |
+| `pcap_dataset.py` | pcap hoặc thư mục log Zeek (TSV/JSON/`.gz`) → dữ liệu có nhãn |
+| `dqn.py`, `train_dqn.py` | DQN thường — bản dùng được trên dữ liệu thật |
+| `eval_checkpoint.py` | chấm một checkpoint trên một tập |
+| `compare_checkpoints.py` | chấm mọi checkpoint của một lần train trên nhiều tập |
+| `audit_report.py` | đọc lại nhật ký chạy live, đối chiếu nhãn |
+| `selfplay.py`, `train_selfplay.py` | attacker có đòn né; `--defender frozen` để đo độ dễ bị khai thác |
