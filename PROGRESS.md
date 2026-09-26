@@ -53,9 +53,15 @@ khôi phục suppression, FP thật thấp nhất; chỉ mất chút phát hiệ
 trận lụt benign-pad ăn được nhiều hơn. (Lỗ hổng vẫn ở dòng *tổng hợp* né tránh;
 cột dữ liệu thật là kiểm tra không-né-tránh, ở đó `vote` gần như không mất gì.)
 
+**Đã kiểm tra `vote` trên TOÀN bộ test battery** (`AGG=vote tools/test_battery.sh
+dqn_g0_s0+...+dqn_g0_s5`): khớp `mean` mọi tập — benign sạch FP 0.00 (ho-web
+0.01→0.00), C2/OTHER trên live/MTA giữ 1.00. Chỉ nhúc nhích ở IoT-23 34-1 cũ
+(RECON 0.99→0.92, C2 0.99→0.97) và iot3-1 OTHER (0.99→0.98) — traffic botnet
+2018, không phải C2 hiện đại. `test_battery.sh` giờ nhận `AGG=vote|smax`.
+
 Việc tiếp theo có thể làm: (a) `vote` với quorum khác (2/6, 3/6) để dò điểm
 cân bằng FP↔bền; (b) fine-tune một seed *chống lại* attacker `spread`/`pad`
-này rồi thêm vào ensemble; (c) so `vote` trên toàn test battery, không chỉ 3 tập.
+này rồi thêm vào ensemble.
 
 ## Cập nhật mới nhất (2026-09-26, khuya): **v8.1 = ensemble 6 seed** `dqn_g0_s{0..5}`
 

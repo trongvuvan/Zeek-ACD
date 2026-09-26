@@ -429,6 +429,14 @@ synthetic stream, so the attacker's DoS-by-false-positive trick scores
 still on the synthetic evasive stream; the real-data columns above are the
 un-evaded check, and there `vote` costs almost nothing.
 
+Validated across the whole test battery (`AGG=vote tools/test_battery.sh
+dqn_g0_s0+...+dqn_g0_s5`), `vote` matches `mean` on every set: all clean
+benign FP 0.00 (`ho-web` 0.01 → 0.00), and live/MTA C2 and OTHER_MALICIOUS
+detection stays 1.00. The only movement is the old IoT-23 34-1 capture
+(RECON 0.99 → 0.92, C2 0.99 → 0.97) and IoT-23 3-1 OTHER (0.99 → 0.98) —
+2018 botnet traffic, not the modern C2 the model is aimed at. `test_battery.sh`
+takes `AGG=vote|smax` to score the battery under either rule.
+
 ## Caveats / what a v2 should improve
 
 - The benign class in the labeled malware data is almost entirely DNS and
