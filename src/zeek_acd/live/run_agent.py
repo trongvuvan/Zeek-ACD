@@ -16,6 +16,7 @@ import torch
 
 from ..context import ConnContext
 from ..dqn import DQNAgent
+from ..ensemble import RawExtractor, load_ensemble
 from ..features import FeatureExtractor, RunningNormalizer
 from ..game import DefenderAction
 from ..minimax_dqn import MinimaxDQNAgent
@@ -55,10 +56,13 @@ def load_policy(path: str):
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--checkpoint", required=True,
+    p.add_argument("--checkpoint", required=True, action="append",
                     help="path to a .pt checkpoint from train.py (minimax) or train_dqn.py "
-                         "(plain DQN); the kind is detected from the checkpoint itself")
-    p.add_argument("--normalizer", required=True, help="path to the matching normalizer_*.json")
+                         "(plain DQN); the kind is detected from the checkpoint itself. "
+                         "Repeat (with one --normalizer each) to run the Q-averaged "
+                         "ensemble of several plain-DQN checkpoints")
+    p.add_argument("--normalizer", required=True, action="append",
+                    help="path to the matching normalizer_*.json")
     p.add_argument("--log-path", required=True, help="path to the live conn.log to tail")
     p.add_argument("--format", choices=["auto", "tsv", "json"], default="auto")
     p.add_argument("--from-start", action="store_true",
@@ -80,11 +84,14 @@ def main() -> None:
     torch.set_num_threads(1)  # tiny network; avoids CPU thread-pool overhead per inference call
     args = parse_args()
 
-    with open(args.normalizer) as f:
-        normalizer = RunningNormalizer.from_dict(json.load(f))
-    fx = FeatureExtractor(normalizer)
-
-    policy, kind = load_policy(args.checkpoint)
+    if len(args.checkpoint) > 1:
+        policy, kind = load_ensemble(args.checkpoint, args.normalizer), \
+            f"ensemble({len(args.checkpoint)})"
+        fx = RawExtractor()
+    else:
+        with open(args.normalizer[0]) as f:
+            fx = FeatureExtractor(RunningNormalizer.from_dict(json.load(f)))
+        policy, kind = load_policy(args.checkpoint[0])
 
     dry_run = not (args.executor == "nftables" and args.live_enforce)
     if args.executor == "nftables" and not args.live_enforce:

@@ -59,11 +59,12 @@ def find_zeek() -> str:
     raise SystemExit("zeek binary not found; looked for: " + ", ".join(ZEEK_BIN_CANDIDATES))
 
 
-def run_zeek(zeek: str, pcap: Path, out_dir: Path) -> None:
+def run_zeek(zeek: str, pcap: Path, out_dir: Path, ignore_checksums: bool = False) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        [zeek, "-r", str(pcap)], cwd=out_dir, capture_output=True, text=True,
-    )
+    # A capture taken on the sending host sees its own packets before the NIC
+    # fills in checksums; without -C Zeek discards all of them.
+    cmd = [zeek, "-C", "-r", str(pcap)] if ignore_checksums else [zeek, "-r", str(pcap)]
+    proc = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"zeek failed on {pcap.name}: {proc.stderr.strip()[:400]}")
 
@@ -362,6 +363,13 @@ def parse_args() -> argparse.Namespace:
                          "Traffic belonging to the other scenarios then matches nothing and is "
                          "handled by --unmatched, which is how a live log gets split into a "
                          "training half and a held-out half by scenario")
+    p.add_argument("--pcap", default=None,
+                    help="run Zeek over this one capture and label it like --zeek-log-dir "
+                         "(against every IOC report, --unmatched for the rest). For a "
+                         "capture of known-clean traffic, e.g. from tools/gen_benign.sh")
+    p.add_argument("--ignore-checksums", action="store_true",
+                    help="pass -C to Zeek; needed for captures taken on the sending host "
+                         "(NIC checksum offloading)")
     p.add_argument("--benign-src", action="append", default=None,
                     help="a source IP whose unmatched traffic is ordinary traffic rather "
                          "than an unknown; repeat per host. Use it for hosts you know are "
@@ -382,12 +390,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if args.zeek_log_dir:
+    if args.pcap:
+        work_dir = Path(tempfile.mkdtemp(prefix="zeek-acd-"))
+        try:
+            run_zeek(find_zeek(), Path(args.pcap).resolve(), work_dir, args.ignore_checksums)
+            iocs = merge_reports(Path(args.ioc_dir), args.ioc_glob)
+            rows, counts = label_log_dir(work_dir, iocs, args.unmatched,
+                                         frozenset(args.benign_src or ()))
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+    elif args.zeek_log_dir:
         iocs = merge_reports(Path(args.ioc_dir), args.ioc_glob)
         rows, counts = label_log_dir(Path(args.zeek_log_dir), iocs, args.unmatched,
                                      frozenset(args.benign_src or ()))
+    if args.pcap or args.zeek_log_dir:
         if not rows:
-            raise SystemExit(f"no conn.log records found in {args.zeek_log_dir}")
+            raise SystemExit(f"no conn.log records found in {args.pcap or args.zeek_log_dir}")
         out_file = Path(args.out_file or Path(args.out_dir) / "live" / "conn.log.labeled")
         out_file.parent.mkdir(parents=True, exist_ok=True)
         write_labeled_tsv(rows, out_file)

@@ -155,13 +155,19 @@ src/zeek_acd/
   train.py            Minimax-DQN trainer
   train_dqn.py         plain DQN trainer (the one that works on real data)
   train_selfplay.py    attacker + defender self-play
-  eval_checkpoint.py   score any checkpoint on any labeled dataset
+  eval_checkpoint.py   score any checkpoint (or a Q-averaged ensemble) on any labeled dataset
+  compare_checkpoints.py  score every checkpoint of one run on several datasets
+  ensemble.py          Q-averaging over several DQN checkpoints (eval + live)
   audit_report.py      read back what a live run decided, vs. labels
   evaluate.py
   live/
     zeek_tail.py        follows a live conn.log (TSV or JSON, rotation-aware)
     action_executor.py  log_only / nftables backends, always audit-logged
-    run_agent.py         CLI wiring it all together
+    run_agent.py         CLI wiring it all together (repeat --checkpoint for an ensemble)
+tools/
+  gen_benign.sh        ordinary web traffic from this host, to capture as clean benign
+  sites_heldout.txt    disjoint site list for a held-out benign capture
+  test_battery.sh      one table: every test set x every checkpoint/ensemble
 ```
 
 ## Two defenders: Minimax-DQN and plain DQN
@@ -301,6 +307,60 @@ taken against benign traffic and leaves the detection payoffs alone. Pass
 it to `train_dqn.py --payoff` (also accepted by `train.py` and
 `eval_checkpoint.py`); with it the false-positive rate stayed within
 1-6% across checkpoints while detection stayed at 100%.
+
+## Training versions
+
+Every training run so far, defender and attacker, with what it changed and
+how it came out. Checkpoints live under `checkpoints/<dir>/` (git-ignored).
+"FP" is the share of benign flows the policy acted on (anything but
+`ALLOW`); "det" is the share of attack flows it acted on. Test sets were never
+used to pick a checkpoint. Detailed notes (Vietnamese) are in `PROGRESS.md`.
+
+### Defender
+
+| version | dir | what changed | result | status |
+|---|---|---|---|---|
+| minimax | `iot23/` | Minimax-DQN on IoT-23 | avg reward 0.120, identical to always-`LOG_ALERT`: it memorized the payoff table and never learned state → class | dead end |
+| dqn_iot23 | `dqn_iot23/` | plain DQN, IoT-23 only, 60-dim features | -0.548 on HTTP/TLS malware, mostly `ALLOW`: IoT-23 attacks are scans/DoS, not full sessions | superseded |
+| mixed / v2 / v3 | `dqn_mixed/`, `dqn_v2/`, `dqn_v3/` | + MTA pcap datasets, cross-flow context features | intermediate steps; absolute context counters drifted with capture length (live FP 77%) | superseded; old feature dims do not load |
+| v4 | `dqn_v4/` | relative-only context, `payoffs/low_fp.json`, + live2025 | live_now FP 0.07, det 1.00; but **FP 0.90 on ordinary HTTPS** (found later) | superseded |
+| v5 | `dqn_v5/` | + host `192.168.6.135` traffic as benign | MTA-2026 FP 0.00 → 0.75. That traffic was checksum-broken on the live sensor, not real benign | negative |
+| v6 | `dqn_v6/` | + clean benign HTTPS captured with `tools/gen_benign.sh` | held-out HTTPS FP 0.05, live2026 FP 0.04, det 1.00 | superseded (lucky seed) |
+| v6 seeds 1, 2 | `dqn_v6_s1/`, `dqn_v6_s2/` | same recipe, other seeds | live2026 FP 0.37 / 0.77: the gamma=0.95 recipe is unstable | diagnostic |
+| v7a | `dqn_v7a/` | v6 + checksum-broken self traffic | fixes broken traffic, MTA-2026 FP → 0.52 | negative |
+| v7b | `dqn_v7b/` | v6 with benign repeat 8 | live0926 FP 0.36 | negative |
+| **v8** | `dqn_g0_s{0,1,2,3}/` | v6 data, **`--gamma 0`**, 4 seeds, Q-averaged ensemble (`ensemble.py`) | FP 0.00–0.01 on every clean benign test set, det 0.96–1.00; every seed alike | **recommended** |
+| joint rf50 / rf75 | `joint_g0s2_rf50/`, `joint_g0s2_rf75/` | self-play fine-tune of a v8 seed against a learning attacker, 50% / 75% of each defender batch from real traffic (`--real-frac`) | stays sound on real data (live_now FP 0.00 throughout), but held-out HTTPS FP 0.02 → 0.08, MTA C2 det 1.00 → 0.93 | not adopted |
+
+Why gamma 0: the flow sequence is exogenous, so the defender's action only
+matters for the current flow. With gamma 0.95 the target also carried
+max-Q of an unrelated next flow (noise: FP swung 1%–86% between checkpoints),
+and because blocking an attacker removes its later flows -- and the reward
+for catching them -- the agent learned to avoid blocking attackers, which is
+why v4/v6 always answered with `DECEIVE`. v8 picks what the payoff table rates
+best: `ISOLATE_HOST` for C2 and other malware. To respond more gently, change
+the payoff table, not the model.
+
+### Attacker (self-play, `train_selfplay.py`)
+
+The attacker picks a traffic class and an evasion mode (`none`, `jitter`,
+`slow`, `spread`, `pad`); its reward is the defender's loss. Against a frozen
+defender its average reward measures how exploitable that defender is.
+
+| run | dir | defender | attacker result | takeaway |
+|---|---|---|---|---|
+| vs v4 (first) | `selfplay_v4frozen/` | v4, frozen | +0.035; all of it from **false positives**: at ep150 it sent 96% harmless traffic and still scored | an IDS with FP can be turned into a DoS tool |
+| joint (first) | `selfplay_joint/` | v4 warm start, trained on self-play only | defender broke from ep250 (live_now FP 0.87–0.96) | synthetic stream is too far from real traffic |
+| vs v4 / vs v6 | `selfplay_v4frozen_b/`, `selfplay_v6frozen_b/` | v4 / v6, frozen | max +0.120 vs v4, max +0.034 vs v6; v6 weaker on synthetic DOS | v6 harder to exploit |
+| vs v8 seed 2 | `selfplay_g0s2frozen/` | g0_s2, frozen | ~0, last eval +0.074; stopped using the harmless-traffic trick | FP exploit gone |
+| joint rf50 / rf75 | `joint_g0s2_rf50/`, `joint_g0s2_rf75/` | trained jointly (see above) | ±0.01 throughout | attacker finds nothing against a defender that keeps real data in its batches |
+| vs v8 seed 2, fixed | `selfplay_g0s2frozen_fixed/` | g0_s2, frozen | PENDING_G0 | rerun after the normalizer fix below |
+| vs joint rf50 | `selfplay_jointrf50frozen/` | joint rf50 ep500, frozen | PENDING_JOINT | is the jointly trained defender harder to exploit? |
+
+Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
+synthetic stream during attacker training, so the first frozen runs
+measured a slightly drifted defender. `train_selfplay.py` now freezes any
+loaded normalizer.
 
 ## Caveats / what a v2 should improve
 

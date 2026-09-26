@@ -1,10 +1,184 @@
 # Tiến trình zeek-acd
 
-Cập nhật: 2026-09-24. Dùng file này để tiếp tục ở phiên sau.
+Cập nhật: 2026-09-26 (tối). Dùng file này để tiếp tục ở phiên sau.
 
-## Trạng thái hiện tại
+## Trạng thái hiện tại (2026-09-26, tối): dùng **v8 = ensemble 4 seed, `--gamma 0`**
 
-Model dùng được: **`checkpoints/dqn_v4/agent_best.pt`** + `normalizer_best.json`
+Model khuyến nghị: trung bình Q của 4 checkpoint `checkpoints/dqn_g0_s{0,1,2,3}/agent_best.pt`
+(s0=ep350, s1/s2/s3=ep550; mỗi cái kèm `normalizer_best.json`). Cùng dữ liệu
+với v6, khác duy nhất **`--gamma 0`**.
+
+Chạy live (chỉ ghi log):
+
+```bash
+E=""; for s in 0 1 2 3; do E="$E --checkpoint checkpoints/dqn_g0_s$s/agent_best.pt \
+  --normalizer checkpoints/dqn_g0_s$s/normalizer_best.json"; done
+PYTHONPATH=src .venv/bin/python -m zeek_acd.live.run_agent $E \
+  --log-path /opt/zeek/logs/current/conn.log --from-start \
+  --audit-log checkpoints/v8/live_audit.jsonl
+```
+
+(`run_agent` và `eval_checkpoint` giờ nhận `--checkpoint/--normalizer` lặp
+lại → ensemble, code ở `ensemble.py`.) Chạy thử đường live trên log live hôm
+nay (`data/live0926`, 6.980 flow): **FP 0.000, phát hiện C2 / OTHER_MAL 1.000**.
+
+Chấm toàn bộ tập test: `tools/test_battery.sh <dir> ... ` (`a+b+c` = ensemble,
+`dir@ep550` = checkpoint cụ thể). Kết quả (action_rate):
+
+| test | lớp | v4 | v6 | v6 seed1 | v6 seed2 | **v8** |
+|---|---|---|---|---|---|---|
+| benign_heldout ssl/http | BENIGN | 0.90 | 0.05 | 0.22 | 0.18 | **0.01** |
+| live2026 | BENIGN | 0.16 | 0.04 | 0.37 | 0.77 | **0.00** |
+| MTA-2026 | BENIGN | 0.00 | 0.00 | 0.02 | 0.10 | **0.00** |
+| live0926 (live hôm nay) | BENIGN | 0.04 | 0.01 | 0.11 | 0.08 | **0.00** |
+| IoT-23 3-1 | BENIGN | 0.04 | 0.48 | 0.54 | 0.66 | **0.00** |
+| IoT-23 34-1 | BENIGN | 0.55 | 0.28 | 0.77 | 0.47 | **0.04** |
+| live2026 / MTA-2026 / live0926 | C2, OTHER_MAL | 1.00 | 1.00 | 1.00 | 1.00 | **1.00** (MTA C2 1.00) |
+| IoT-23 34-1 | DOS / C2 / RECON | 1.00/1.00/0.96 | 1.00/1.00/0.91 | | | **1.00/0.97/0.96** |
+| selfbroken_test (checksum hỏng) | BENIGN | 0.95 | 0.55 | 0.56 | 0.43 | 0.58 |
+
+Từng seed gamma=0 riêng lẻ cũng đều FP 0.00–0.02 trên mọi tập benign sạch —
+**không còn phụ thuộc may rủi seed**.
+
+### Phát hiện 1: v6 "tốt" là do may seed
+
+Cùng công thức v6 với seed 1 và 2: FP live2026 0.37 / 0.77 (seed 0: 0.04).
+Phát hiện luôn 1.00; cái dao động là FP. Ensemble (3 seed, hoặc 4 checkpoint
+cuối cùng một seed) chỉ giảm một phần (0.20–0.30).
+
+### Phát hiện 2: `gamma=0.95` là nguồn nhiễu **và** làm lệch hành động
+
+Chuỗi flow là ngoại sinh; hành động chỉ ảnh hưởng tương lai qua việc chặn
+nguồn. Với gamma>0, target = r + γ·max Q(flow kế tiếp không liên quan) → nhiễu,
+FP nhảy 1%↔86% giữa các checkpoint. Tệ hơn: chặn/cô lập kẻ tấn công **xoá các
+flow sau của nó**, tức là mất phần thưởng "phát hiện" tương lai → model học
+tránh chặn kẻ tấn công. Đó là lý do v4/v6 luôn chọn `DECEIVE`.
+
+Với `--gamma 0`: `live_now` FP = 0.00 ở **mọi** checkpoint từ ep100, và hành
+động là đúng cái bảng payoff đánh giá cao nhất — **`ISOLATE_HOST`** cho C2 và
+OTHER_MAL. Đây là thay đổi hành vi: nếu bật enforcement, v8 sẽ cô lập host
+chứ không deceive. Muốn phản ứng nhẹ hơn thì sửa bảng payoff
+(`payoffs/low_fp.json`), không phải sửa model.
+
+### Kết quả âm hôm nay
+
+- **v7a** = v6 + traffic `192.168.6.135` bị hỏng checksum (`data/selfbroken_train`):
+  sửa được traffic hỏng (0.55→0.01) nhưng FP MTA-2026 0.00→**0.52**, live2026
+  0.04→0.17. Lặp lại đúng lỗi v5. **Sửa ở sensor, đừng train trên traffic hỏng.**
+- **v7b** = v6 với benign_web `--repeat 8`: không sửa IoT 3-1, live0926 FP 0.36.
+- Self-play `--defender frozen` với seed g0_s2: attacker ~0 phần lớn các lần
+  eval, lần cuối +0.074 (v4 tối đa +0.120, v6 +0.034). Attacker **thôi dùng
+  đòn gửi traffic BENIGN để gây FP** (đòn tìm ra ở phiên trước) vì không còn
+  ăn. Log: `checkpoints/selfplay_g0s2frozen/train.log`.
+
+Train lại một seed v8 (chạy 4 seed 0–3, mỗi cái ~15 phút, 2 cái song song):
+
+```bash
+PYTHONPATH=src .venv/bin/python -u -m zeek_acd.train_dqn \
+  --data 'data/iot23/*/conn.log.labeled' --repeat 1 \
+  --data 'data/mta/2025-*/conn.log.labeled' --repeat 40 \
+  --data 'data/live2025/conn.log.labeled' --repeat 20 \
+  --data 'data/benign_web/train/conn.log.labeled' --repeat 15 \
+  --payoff payoffs/low_fp.json --gamma 0 --seed 0 \
+  --max-records-per-file 15000 --episodes 600 --eps-decay-episodes 400 \
+  --eval-every 50 --checkpoint-dir checkpoints/dqn_g0_s0
+# rồi chọn checkpoint bằng compare_checkpoints ... --select web-val (như v6)
+```
+
+## v6 (2026-09-26, chiều) — đã bị v8 thay
+
+Model v6: **`checkpoints/dqn_v6/agent_best.pt`** + `normalizer_best.json`
+(= `agent_ep500.pt`). Khác v4 duy nhất ở chỗ thêm dữ liệu **benign HTTPS/HTTP
+sạch** (Zeek thấy trọn vẹn, `SF` + `service=ssl/http`) do `tools/gen_benign.sh`
+sinh ra.
+
+Checkpoint được **chọn trên tập validation** (`benign_web/val` + `live_now`),
+rồi mới chấm trên các tập test chưa dùng để chọn (tách hẳn val/test, xử lý mục
+#2 cũ). Chấm bằng `payoffs/low_fp.json` (mục #3 cũ).
+
+Tỉ lệ ra tay (`action_rate`) — trên BENIGN là FP, trên tấn công là phát hiện:
+
+| tập test | lớp | v4 | **v6** |
+|---|---|---|---|
+| `benign_heldout` (site **không trùng** tập train), chỉ ssl/http, n=375 | BENIGN | 0.90 | **0.05** |
+| `benign_heldout` toàn bộ (kèm DNS), n=804 | BENIGN | 0.39 | **0.02** |
+| `live2026` | BENIGN | 0.16 | **0.04** |
+| `live2026` | C2 / OTHER_MAL | 1.00 / 1.00 | 1.00 / 1.00 |
+| MTA-2026 | BENIGN | 0.00 | 0.00 |
+| MTA-2026 | C2 / OTHER_MAL | 1.00 / 1.00 | 1.00 / 1.00 |
+| IoT-23 34-1 (dữ liệu train) | DOS / C2 | 1.00 / 1.00 | 1.00 / 1.00 |
+
+Validation (`compare_checkpoints`, low_fp): ep500 web-val FP 0.02, `live_now`
+FP **0.01** phát hiện 1.00 (v4: FP 0.07).
+
+**Con số FP 7% của v4 là quá lạc quan**: tập BENIGN cũ gần như chỉ có DNS/NTP.
+Trên HTTPS bình thường ra Internet, v4 ra tay với 61–90% flow (chủ yếu
+`DECEIVE`/`RATE_LIMIT`).
+
+Điểm yếu còn lại của v6:
+- IoT-23 capture 3-1: BENIGN `LOG_ALERT` 47% (v4: 3%) — chỉ là hành động nhẹ
+  nhất, trên thiết bị honeypot IoT, nhưng là thoái lui thật.
+- Self-play `--defender frozen` (400 ep, cùng cấu hình cho cả hai): attacker
+  kiếm được ít hơn trước v6 (tối đa +0.034/bước, thường âm; v4 lên tới +0.120),
+  FP trên benign tổng hợp thấp hơn (0.09–0.46 vs 0.35–0.81). Nhưng phát hiện
+  **DOS tổng hợp** tụt còn 0.29–0.80 (v4 ~1.00), C2 dùng `spread` còn 0.65–1.00.
+  Trên DOS thật (IoT-23) vẫn 1.00, nên đây là lệch phân phối của env tổng hợp;
+  cứ theo dõi. Log: `checkpoints/selfplay_v{4,6}frozen_b/train.log`.
+
+Train lại v6:
+
+```bash
+PYTHONPATH=src .venv/bin/python -u -m zeek_acd.train_dqn \
+  --data 'data/iot23/*/conn.log.labeled' --repeat 1 \
+  --data 'data/mta/2025-*/conn.log.labeled' --repeat 40 \
+  --data 'data/live2025/conn.log.labeled' --repeat 20 \
+  --data 'data/benign_web/train/conn.log.labeled' --repeat 15 \
+  --payoff payoffs/low_fp.json \
+  --max-records-per-file 15000 --episodes 600 --eps-decay-episodes 400 \
+  --eval-every 50 --checkpoint-dir checkpoints/dqn_v6
+# chọn checkpoint CHỈ trên validation:
+PYTHONPATH=src .venv/bin/python -m zeek_acd.compare_checkpoints \
+  --checkpoint-dir checkpoints/dqn_v6 --payoff payoffs/low_fp.json \
+  --data 'web-val=data/benign_web/val/conn.log.labeled' \
+  --data 'live-now=data/live_now/conn.log.labeled' --select web-val
+```
+
+Dữ liệu benign mới (sinh từ chính máy này, `192.168.6.135`):
+
+```bash
+cd data/benign_web
+tcpdump -i ens160 -s 0 -w benign_web.pcap \
+  'host 192.168.6.135 and (tcp port 80 or tcp port 443 or udp port 53 or udp port 443)' &
+../../tools/gen_benign.sh 1500          # tập test: thêm ../../tools/sites_heldout.txt
+kill -INT %1
+cd ../..
+PYTHONPATH=src .venv/bin/python -m zeek_acd.pcap_dataset \
+  --pcap data/benign_web/benign_web.pcap --ignore-checksums \
+  --unmatched benign --benign-src 192.168.6.135 \
+  --out-file data/benign_web/all.conn.log.labeled
+# rồi tách theo thời gian: 75% đầu -> train/, 25% cuối -> val/
+```
+
+`benign_web`: 1.095 flow (train 821 / val 274), `benign_heldout`: 804 flow,
+0 flow khớp IOC. Gồm: duyệt ~50 site phổ biến, tải file lớn, và **poll định kỳ
+~30s** (kiểu kiểm tra kết nối/cập nhật) — benign nhưng có nhịp như beacon C2.
+
+### Phát hiện: "mất gói" của `192.168.6.135` thật ra là **checksum offload**
+
+Zeek live trên `ens160` thấy traffic của chính máy này là `OTH`/`SHR`/`RSTO`
+không có service. Cùng traffic đó bắt bằng tcpdump rồi `zeek -C -r` thì ra
+`SF`/`ssl` bình thường. Gói *đi ra* từ máy này bị bắt trước khi NIC điền
+checksum, Zeek coi là checksum sai và **bỏ** (chỉ còn thấy chiều trả lời).
+Đây là nguyên nhân thật của kết quả âm v5 bên dưới, không phải mạng mất gói.
+
+Sửa ở sensor (chưa làm — là cấu hình của người dùng): thêm
+`redef ignore_checksums = T;` vào `/usr/local/zeek/share/zeek/site/local.zeek`
+rồi `zeekctl deploy`, hoặc `ethtool -K ens160 tx off rx off`. Sau khi sửa thì
+log live của `192.168.6.135` dùng được làm benign thật.
+
+## Trạng thái cũ (2026-09-24): v4
+
+Model trước đó: **`checkpoints/dqn_v4/agent_best.pt`** + `normalizer_best.json`
 (chính là `agent_ep500.pt`). Kiểm chứng trên log Zeek **live** (3.604 flow có
 nhãn, bắt trên card mạng chứ không phải `zeek -r`):
 
@@ -73,7 +247,13 @@ không đổi. **Đừng mặc định lấy checkpoint cuối.**
 | `checkpoints/iot23/` | minimax-DQN, phiên đầu | không (= baseline LOG_ALERT) |
 | `checkpoints/dqn_iot23/` | DQN chỉ IoT-23, feature cũ 60 chiều | không (không tổng quát) |
 | `checkpoints/dqn_mixed/`, `dqn_v2/`, `dqn_v3/` | các bước trung gian | không |
-| **`checkpoints/dqn_v4/`** | **bản khuyến nghị (`agent_best.pt` = ep500)** | **có** |
+| `checkpoints/dqn_v4/` | bản trước (`agent_best.pt` = ep500); FP cao trên HTTPS | thay bằng v6 |
+| `checkpoints/dqn_v6/` | v6 (`agent_best.pt` = ep500), seed may mắn | thay bằng v8 |
+| `checkpoints/dqn_v6_s{1,2}/` | v6 với seed khác — đo độ dao động | không |
+| `checkpoints/dqn_v7{a,b}/` | thử nghiệm âm (xem trên) | không |
+| **`checkpoints/dqn_g0_s{0,1,2,3}/`** | **v8: ensemble 4 seed, gamma=0** | **có** |
+| `checkpoints/v8/` | audit chạy live thử của v8 | |
+| `checkpoints/selfplay_v{4,6}frozen_b/` | đo độ dễ bị khai thác của v4/v6, cùng cấu hình | chỉ để chẩn đoán |
 | `checkpoints/dqn_v5/` | thêm benign mất gói | không — xem "Kết quả âm" |
 | `checkpoints/selfplay_v4frozen/` | attacker học đấu v4 đóng băng | chỉ để chẩn đoán |
 | `checkpoints/selfplay_joint/` | train chung | không — hỏng từ ep250 |
@@ -147,7 +327,12 @@ thưởng phát hiện giữ nguyên. FP ổn định 0.01–0.06 suốt ep200�
 | `data/mta/2026-*/` | 4 pcap còn lại | **test, chưa từng train** |
 | `data/live2025/` | log live, chỉ giữ flow khớp IOC `2025-*` | train |
 | `data/live2026/` | log live, chỉ giữ flow khớp IOC `2026-*` | **test** |
-| `data/live_now/` | toàn bộ log live hiện tại | kiểm chứng |
+| `data/live_now/` | toàn bộ log live hiện tại | **validation** |
+| `data/benign_web/{train,val}/` | benign HTTPS sạch, tách theo thời gian 75/25 | train / **validation** |
+| `data/benign_heldout/` | benign HTTPS sạch, site khác hẳn (`tools/sites_heldout.txt`) | **test** |
+| `data/benign_heldout_web/` | như trên, chỉ ssl/http | **test** |
+| `data/live0926/` | log live 2026-09-26 16:33–17:46, nhãn theo IOC, bỏ external không khớp | **test** |
+| `data/selfbroken_{train,test}/` | traffic web của `192.168.6.135` bị hỏng checksum, tách tại 16:57 | chỉ thử nghiệm |
 
 Dựng lại:
 
@@ -175,7 +360,8 @@ với v5 ep600), chỉ đổi lấy 0.04 vs 0.12 trên `live-now`. Phát hiện 
 
 Lý do: traffic đó có `conn_state` là `SHR`/`OTH`/`RSTO` — mạng `192.168.6.135`
 bị mất gói nên Zeek chỉ thấy một phần mỗi kết nối, và `service` không xác định
-được. Model dịch khái niệm "sạch" về phía kết nối đứt đoạn rồi quay ra nghi ngờ
+được. **(2026-09-26: nguyên nhân thật là checksum offload, xem phần đầu —
+không phải mất gói.)** Model dịch khái niệm "sạch" về phía kết nối đứt đoạn rồi quay ra nghi ngờ
 các phiên hoàn chỉnh. **Dữ liệu mất gói không thay được dữ liệu benign sạch** —
 muốn đóng lỗ hổng này phải có capture duyệt web bình thường mà Zeek thấy trọn
 vẹn (`conn_state=SF`).
@@ -208,23 +394,27 @@ episode self-play, hoặc cho env phát traffic theo đúng thành phần dòng 
 
 ## Việc tiếp theo
 
-1. Tập BENIGN hiện gần như chỉ có DNS/NTP tới resolver nội bộ; **chưa có HTTPS
-   bình thường ra Internet mà Zeek thấy trọn vẹn**. Cần capture duyệt web sạch
-   (`conn_state=SF`, có `service=ssl`) rồi đo lại FP — đây là giới hạn lớn nhất
-   còn lại của con số FP 7%. Xem phần "Kết quả âm" ở trên: lấy tạm traffic bị
-   mất gói thì phản tác dụng.
-2. Chọn checkpoint đang dựa trên chính các tập giữ lại (ep500 chọn theo
-   `live_now`). Có thêm dữ liệu thì nên tách hẳn validation và test.
-3. `dqn_v4` đang train bằng `payoffs/low_fp.json` nhưng chấm điểm bằng bảng mặc
-   định (để so được giữa các bản). Nếu chốt dùng bảng low_fp thì nên chấm bằng
-   chính nó.
-4. Nếu quay lại self-play: xen kẽ episode dữ liệu thật với episode self-play
-   (xem phần "Kết quả âm"). Riêng phép đo độ dễ bị khai thác
-   (`--defender frozen`) thì dùng được ngay và nên chạy lại sau mỗi lần train.
-5. Chưa bật enforcement thật (`--executor nftables --live-enforce`). Với FP 7%
-   trên BENIGN thì **chưa nên bật**.
+1. Sửa checksum ở sensor live (`redef ignore_checksums = T;` hoặc
+   `ethtool -K ens160 tx off`) — việc của người dùng. Sau đó chạy v8 live
+   (lệnh ở đầu file) trên traffic thật của `192.168.6.135`.
+2. Quyết định bảng payoff: v8 dùng `ISOLATE_HOST` cho mọi tấn công. Nếu muốn
+   phản ứng nhẹ hơn (DECEIVE/RATE_LIMIT) khi bật enforcement thì sửa bảng.
+3. Env có động lực sai khi gamma>0 (chặn kẻ tấn công = mất thưởng tương lai).
+   Nếu muốn quay lại học nhiều bước (gamma>0), phải sửa reward: ví dụ thưởng
+   cho mỗi flow độc hại bị chặn *trước khi xảy ra* bằng đúng phần thưởng phát
+   hiện, để chặn sớm không bị phạt.
+4. Benign vẫn chỉ từ curl trên một máy Linux. Thêm trình duyệt thật / Windows.
+5. Chưa bật enforcement thật. v8 FP 0–1% trên benign sạch; nên chạy live ở
+   chế độ chỉ ghi log vài ngày trước.
 
 ## Trạng thái git
+
+2026-09-26: chưa commit — `PROGRESS.md`, `src/zeek_acd/pcap_dataset.py`
+(thêm `--pcap`, `--ignore-checksums`), `src/zeek_acd/eval_checkpoint.py` và
+`src/zeek_acd/live/run_agent.py` (ensemble), file mới `src/zeek_acd/ensemble.py`,
+`tools/gen_benign.sh`, `tools/sites_heldout.txt`, `tools/test_battery.sh`.
+
+Trước đó:
 
 Commit gần nhất là `887ed78` (do người dùng tự commit). Chưa commit:
 `PROGRESS.md`, `src/zeek_acd/pcap_dataset.py`, `src/zeek_acd/selfplay.py`,
@@ -243,3 +433,4 @@ Commit gần nhất là `887ed78` (do người dùng tự commit). Chưa commit:
 | `compare_checkpoints.py` | chấm mọi checkpoint của một lần train trên nhiều tập |
 | `audit_report.py` | đọc lại nhật ký chạy live, đối chiếu nhãn |
 | `selfplay.py`, `train_selfplay.py` | attacker có đòn né; `--defender frozen` để đo độ dễ bị khai thác |
+| `ensemble.py` | trung bình Q của nhiều checkpoint DQN (dùng bởi `eval_checkpoint`, `run_agent`) |

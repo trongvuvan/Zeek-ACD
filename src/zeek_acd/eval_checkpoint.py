@@ -26,6 +26,7 @@ import numpy as np
 import torch
 
 from .data import load_conn_log_labeled
+from .ensemble import RawExtractor, load_ensemble
 from .env import ACDMarkovGameEnv
 from .evaluate import make_constant_policy, rollout, summarize
 from .features import FeatureExtractor, RunningNormalizer
@@ -36,8 +37,10 @@ from .live.run_agent import load_policy
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--checkpoint", required=True)
-    p.add_argument("--normalizer", required=True)
+    p.add_argument("--checkpoint", required=True, action="append",
+                    help="repeat (with one --normalizer each) to score the Q-averaged "
+                         "ensemble of several plain-DQN checkpoints")
+    p.add_argument("--normalizer", required=True, action="append")
     p.add_argument("--data", required=True, help="glob for conn.log.labeled files")
     p.add_argument("--max-records-per-file", type=int, default=None)
     p.add_argument("--mode", choices=["flat", "env"], default="flat")
@@ -91,14 +94,18 @@ def main() -> None:
     args = parse_args()
 
     records = load_conn_log_labeled(args.data, args.max_records_per_file)
-    with open(args.normalizer) as f:
-        normalizer = RunningNormalizer.from_dict(json.load(f))
-    fx = FeatureExtractor(normalizer)
+    if len(args.checkpoint) > 1:
+        policy, kind = load_ensemble(args.checkpoint, args.normalizer), \
+            f"ensemble({len(args.checkpoint)})"
+        fx = RawExtractor()
+    else:
+        with open(args.normalizer[0]) as f:
+            fx = FeatureExtractor(RunningNormalizer.from_dict(json.load(f)))
+        policy, kind = load_policy(args.checkpoint[0])
     payoff = (PayoffTable.from_dict(json.load(open(args.payoff))) if args.payoff
               else PayoffTable.default())
-    policy, kind = load_policy(args.checkpoint)
     print(f"[eval] {len(records)} records from {args.data}, {kind} checkpoint "
-          f"{args.checkpoint}, mode={args.mode}")
+          f"{', '.join(args.checkpoint)}, mode={args.mode}")
 
     if args.mode == "flat":
         print(summarize(f"{kind} checkpoint", flat_eval(records, fx, policy, payoff)))

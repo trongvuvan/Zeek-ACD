@@ -32,6 +32,7 @@ import torch
 
 from .data import load_sources, train_eval_split
 from .dqn import DQNAgent, DQNConfig, DQNTransition, SimpleReplayBuffer
+from .env import ACDMarkovGameEnv
 from .features import FeatureExtractor, RunningNormalizer
 from .game import AttackerClass, DefenderAction, PayoffTable
 from .live.run_agent import load_policy
@@ -72,6 +73,21 @@ def parse_args() -> argparse.Namespace:
                          "teaches a defender to handle an adaptive attacker; starting from "
                          "one that already works on real traffic keeps what it knows "
                          "instead of relearning it against a synthetic opponent")
+    p.add_argument("--defender-lr", type=float, default=None,
+                    help="override the learning rate of a --defender-init defender "
+                         "(fine-tuning a working defender wants a smaller step)")
+    p.add_argument("--defender-gamma", type=float, default=None,
+                    help="override the defender's gamma (the v8 defenders use 0)")
+    p.add_argument("--defender-eps", type=float, default=None,
+                    help="constant exploration rate for the trainable defender instead of "
+                         "the shared decay schedule; a warm-started defender exploring at "
+                         "eps=1.0 would hand the attacker a random opponent early on")
+    p.add_argument("--real-frac", type=float, default=0.0,
+                    help="with --defender vanilla: fraction of every defender batch drawn "
+                         "from replayed REAL traffic (the --data trace stepped through "
+                         "env.ACDMarkovGameEnv each episode) instead of self-play. Joint "
+                         "training with 0 wrecked the defender on real traffic: the "
+                         "synthetic stream is too far from the real distribution")
     p.add_argument("--eval-every", type=int, default=50)
     p.add_argument("--eval-episodes", type=int, default=10)
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints_selfplay")
@@ -229,8 +245,12 @@ def main() -> None:
     payoff = (PayoffTable.from_dict(json.load(open(args.payoff))) if args.payoff
               else PayoffTable.default())
 
+    # A loaded normalizer stays fixed: updating it here would rescale the
+    # (frozen or warm-started) defender's inputs towards the synthetic stream.
+    update_norm = not args.defender_normalizer
     train_env = SelfPlayACDEnv(train_records, fx_train, payoff=payoff,
-                               episode_length=args.episode_length, training=True, seed=args.seed)
+                               episode_length=args.episode_length, training=update_norm,
+                               seed=args.seed)
     eval_env = SelfPlayACDEnv(eval_records, fx_eval, payoff=payoff,
                               episode_length=args.episode_length, training=False, seed=args.seed + 1000)
 
@@ -250,7 +270,14 @@ def main() -> None:
     else:
         if args.defender_init:
             defender_agent = DQNAgent.load(args.defender_init)
-            print(f"[selfplay] defender warm-started from {args.defender_init}")
+            if args.defender_gamma is not None:
+                defender_agent.cfg.gamma = args.defender_gamma
+            if args.defender_lr is not None:
+                defender_agent.cfg.lr = args.defender_lr
+                for g in defender_agent.optimizer.param_groups:
+                    g["lr"] = args.defender_lr
+            print(f"[selfplay] defender warm-started from {args.defender_init} "
+                  f"(lr={defender_agent.cfg.lr}, gamma={defender_agent.cfg.gamma})")
         else:
             defender_agent = DQNAgent(DQNConfig(
                 state_dim=train_env.defender_obs_dim, n_actions=train_env.n_defender_actions,
@@ -259,13 +286,45 @@ def main() -> None:
         defender_buf = SimpleReplayBuffer(args.buffer_size, train_env.defender_obs_dim, seed=args.seed + 7)
         print("[selfplay] training both attacker and belief-based (vanilla) defender")
 
+    real_env = real_buf = None
+    if args.real_frac > 0 and defender_agent is not None:
+        real_env = ACDMarkovGameEnv(train_records, FeatureExtractor(normalizer), payoff=payoff,
+                                    episode_length=args.episode_length, training=update_norm,
+                                    seed=args.seed + 13)
+        real_buf = SimpleReplayBuffer(args.buffer_size, train_env.defender_obs_dim,
+                                      seed=args.seed + 17)
+        print(f"[selfplay] {args.real_frac:.0%} of each defender batch from real traffic")
+    n_real = int(round(args.batch_size * args.real_frac))
+
+    def defender_batch():
+        if real_buf is None or len(real_buf) < args.min_buffer or n_real == 0:
+            return defender_buf.sample(args.batch_size)
+        if n_real >= args.batch_size:
+            return real_buf.sample(args.batch_size)
+        return tuple(np.concatenate(parts) for parts in
+                     zip(real_buf.sample(n_real), defender_buf.sample(args.batch_size - n_real)))
+
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     global_step = 0
 
     for ep in range(args.episodes):
-        a_obs = train_env.reset()
         eps = epsilon_at(ep, args)
+        d_eps = eps if args.defender_eps is None else args.defender_eps
+
+        if real_env is not None:
+            # One episode of the real trace for the defender alone, so its
+            # replay never loses touch with the distribution it is deployed on.
+            obs, _ = real_env.reset(seed=args.seed + ep)
+            real_done = False
+            while not real_done:
+                act = defender.select_action(obs, d_eps, rng)
+                nxt, r, term, trunc, _ = real_env.step(act)
+                real_done = term or trunc
+                real_buf.push(DQNTransition(obs, act, r, nxt, real_done))
+                obs = nxt
+
+        a_obs = train_env.reset()
         done = False
         # pending defender transition, finalized at its next decision or ep end
         pending_def = None  # (state, action, reward)
@@ -277,7 +336,7 @@ def main() -> None:
             if suppressed:
                 d_reward, a_reward, next_a_obs, done = train_env.suppressed_step()
             else:
-                d_action = defender.select_action(d_obs, eps, rng)
+                d_action = defender.select_action(d_obs, d_eps, rng)
                 d_reward, a_reward, next_a_obs, done = train_env.defender_step(d_action, realized_class)
                 if defender.trainable:
                     if pending_def is not None:
@@ -292,7 +351,7 @@ def main() -> None:
             if len(attacker_buf) >= args.min_buffer:
                 attacker.train_step(attacker_buf.sample(args.batch_size))
             if defender.trainable and defender_buf is not None and len(defender_buf) >= args.min_buffer:
-                defender_agent.train_step(defender_buf.sample(args.batch_size))
+                defender_agent.train_step(defender_batch())
 
         # finalize the last pending defender transition as terminal
         if defender.trainable and pending_def is not None:
