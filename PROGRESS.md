@@ -23,6 +23,10 @@ Attacker (self-play, defender đóng băng):
   flow) FP 0.00, det 1.00; traffic bảo trì máy chủ chưa từng thấy
   (`data/benign_ops`: dnf, git clone, pip, wget; 234 flow) FP 0.00 (v6 0.27,
   v4 0.40).
+- v9 (`dqn_v9_s{0,1}`): v8.1 + log live sáng sớm 26/9 (nhãn IOC 2025) —
+  không hơn v8.1 (RECON IoT 0.94, MTA-2026 OTHER_MAL 0.98). Replay lặp lại
+  cùng kịch bản không thêm thông tin; cần kịch bản mới (người dùng đang tạo
+  pcap). Vòng lặp tự động (`/loop`) đang chạy: kiểm tra pcap mới, train, chấm.
 - Bảng đầy đủ mọi phiên bản defender/attacker: README, mục "Training versions".
 
 ## Trạng thái (2026-09-26, tối): v8 = ensemble 4 seed, `--gamma 0`

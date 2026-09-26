@@ -331,6 +331,7 @@ used to pick a checkpoint. Detailed notes (Vietnamese) are in `PROGRESS.md`.
 | v7b | `dqn_v7b/` | v6 with benign repeat 8 | live0926 FP 0.36 | negative |
 | v8 | `dqn_g0_s{0,1,2,3}/` | v6 data, **`--gamma 0`**, 4 seeds, Q-averaged ensemble (`ensemble.py`) | FP 0.00–0.01 on every clean benign test set, det 0.96–1.00; every seed alike | superseded by v8.1 |
 | **v8.1** | `dqn_g0_s{0..5}/` | v8 + seeds 4 and 5 (6-model ensemble) | same FP as v8 (0.00–0.01); IoT-23 34-1 RECON 0.96 → 0.99, C2 0.97 → 0.99. New live traffic (`live0926b`, 13.4k flows): FP 0.00, det 1.00. Unseen server-maintenance traffic (`benign_ops`: dnf, git, pip, wget; 234 flows): FP 0.00 (v6 0.27, v4 0.40) | **recommended** |
+| v9 | `dqn_v9_s{0,1}/` | v8.1 recipe + early live traffic of 2026-09-26 (16:33–17:46, labeled with 2025 IOCs only, `data/live0926_2025`, ×3), 2 seeds | no better than v8.1: IoT-23 34-1 RECON 0.94 vs 0.99, MTA-2026 OTHER_MAL 0.98 vs 1.00, held-out web FP 0.02 vs 0.01 -- more replays of the same scenarios add nothing | not adopted |
 | joint rf50 / rf75 | `joint_g0s2_rf50/`, `joint_g0s2_rf75/` | self-play fine-tune of a v8 seed against a learning attacker, 50% / 75% of each defender batch from real traffic (`--real-frac`) | stays sound on real data (live_now FP 0.00 throughout), but held-out HTTPS FP 0.02 → 0.08, MTA C2 det 1.00 → 0.93 | not adopted |
 
 Why gamma 0: the flow sequence is exogenous, so the defender's action only
