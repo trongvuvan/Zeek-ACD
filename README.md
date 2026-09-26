@@ -363,7 +363,9 @@ defender its average reward measures how exploitable that defender is.
 | vs v8 seed 4, long | `selfplay_g0s4frozen_long/` | g0_s4, frozen, 1000 ep | max +0.039; OTHER_MAL + `spread` (det 0.67), C2 det 0.63 | `spread` again |
 | vs v8 seed 5, long | `selfplay_g0s5frozen_long/` | g0_s5, frozen, 1000 ep | max +0.044; C2 + `spread` (det 0.48) | `spread` again |
 | vs v8 seed 2, big mix | `selfplay_g0s2frozen_bigmix/` | g0_s2, frozen, 1000 ep, full IoT-23 + MTA + benign (174k records, no per-file cap) | max +0.049; suppressed 0.84–0.98 the whole run; settles on `jitter`/`spread`/`slow` with the attacker mostly blocked | control for the ensemble row below — a single seed keeps the attacker suppressed even on the larger mix |
-| **vs v8.1 ensemble, long** | `selfplay_v81ensemblefrozen_long/` | the **deployed 6-model ensemble** (`ensemble.load_ensemble`), frozen, 1000 ep, same 174k mix | max **+0.123** (2.5× the single seed above); suppression falls to **0.35–0.54**; the attacker mixes padded/jittered C2/DOS/OTHER_MAL (ensemble detection on the evaded stream drops to 0.35–0.50) with a flood of padded/jittered BENIGN (ensemble acts on 0.09–0.22 of it) | **the Q-averaged ensemble is *more* exploitable by an adaptive attacker than any single seed** — see below |
+| **vs v8.1 ensemble, long** | `selfplay_v81ensemblefrozen_long/` | the **deployed 6-model ensemble** (`ensemble.load_ensemble`, `mean`), frozen, 1000 ep, same 174k mix | max **+0.123** (2.5× the single seed above); suppression falls to **0.35–0.54**; the attacker mixes padded/jittered C2/DOS/OTHER_MAL (ensemble detection on the evaded stream drops to 0.35–0.50) with a flood of padded/jittered BENIGN (ensemble acts on 0.09–0.22 of it) | **the Q-averaged ensemble is *more* exploitable by an adaptive attacker than any single seed** — see below |
+| vs ensemble, `vote` | `selfplay_v81ens_vote_long/` | 6-model ensemble, **majority vote-to-block**, frozen, 1000 ep, same mix | max +0.047; suppression holds 0.62–0.98 | vote-to-block restores the hard block; ~halves the exploit and keeps real FP lowest (now the default) |
+| vs ensemble, `smax` | `selfplay_v81ens_smax_long/` | 6-model ensemble, **severity-max**, frozen, 1000 ep, same mix | max +0.064; suppression 0.65–0.99 but FP 0.30 on padded benign | too eager: the benign-FP DoS scores more against it than against `vote` |
 
 Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
 synthetic stream during attacker training, so the first frozen runs
@@ -396,11 +398,36 @@ draws false positives on padded benign. Ensembling was adopted to cut the
 false-positive *variance on fixed real data* (v6 seeds swung FP 0.04–0.77),
 and it still does that — on real un-evaded benign the ensemble's FP is
 0.00–0.01 and its detection 0.97–1.00. But mean-Q is the wrong aggregation
-for *robustness to an adaptive adversary*: a **severity-max or
-vote-to-block** rule (block if any member would, or if a quorum would)
-would keep the hard block a single seed commits to. That is the next thing
-to try — as a change to how `ensemble.py` combines members, not to the
-models.
+for *robustness to an adaptive adversary*.
+
+**Fix: vote-to-block aggregation (2026-09-26).** `ensemble.py` now offers
+three ways to combine members (`--agg`): `mean` (average Q, the old
+behavior), `vote` (each member takes its own argmax, the ensemble plays the
+majority action, ties broken toward the more suppressing one), and `smax`
+(the most suppressing action any member's argmax chose). Both `vote` and
+`smax` keep the hard block a lone seed would apply, which `mean` averages
+away. Measured on real test data and re-attacked in self-play under the
+identical 174k / 1000-episode setup:
+
+| agg | real FP (held-out web) | real detection (IoT-23 34-1 RECON/DOS/C2, MTA C2/OTHER) | attacker max reward | suppression under attack |
+|---|---|---|---|---|
+| `mean` | 0.01 | 0.99 / 1.00 / 0.99, 1.00 / 1.00 | +0.123 | falls to 0.35 |
+| `vote` | **0.00** | 0.92 / 1.00 / 0.97, 1.00 / 1.00 | **+0.047** | holds 0.62–0.98 |
+| `smax` | 0.04 | 1.00 / 1.00 / 1.00, 1.00 / 1.00 | +0.064 | holds 0.65–0.99 |
+
+`vote` is the best trade-off and is now the default in `run_agent.py` and
+`eval_checkpoint.py`: it roughly **halves** how much an adaptive attacker
+can win (+0.123 → +0.047), restores suppression (the attacker is blocked
+0.62–0.98 of the time instead of escaping to 0.35), and has the *lowest*
+real-data false-positive rate of the three — at a small detection cost on
+IoT-23 34-1 (RECON 0.99 → 0.92, C2 0.99 → 0.97). `smax` detects every real
+attack (1.00) but is the wrong pick under attack: its eagerness to block
+means the padded-benign flood draws a 0.30 false-positive rate on the
+synthetic stream, so the attacker's DoS-by-false-positive trick scores
+*more* against it (+0.064) than against `vote`. Runs:
+`selfplay_v81ens_vote_long/`, `selfplay_v81ens_smax_long/`. All of this is
+still on the synthetic evasive stream; the real-data columns above are the
+un-evaded check, and there `vote` costs almost nothing.
 
 ## Caveats / what a v2 should improve
 

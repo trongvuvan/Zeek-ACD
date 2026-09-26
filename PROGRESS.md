@@ -32,11 +32,30 @@ positive trên benign đã pad.
 Ensemble sinh ra để giảm **phương sai FP trên dữ liệu thật cố định** (v6 các
 seed swing FP 0.04–0.77) — và vẫn làm được: trên benign thật (không né tránh)
 FP 0.00–0.01, phát hiện 0.97–1.00. Nhưng **mean-Q là cách gộp sai cho độ bền
-trước kẻ địch thích nghi**. Việc tiếp theo: đổi cách `ensemble.py` gộp thành
-**severity-max / vote-to-block** (chặn nếu *bất kỳ* thành viên nào chặn, hoặc
-đủ số phiếu) để giữ lại cú block dứt khoát của một seed — sửa cách gộp, không
-sửa model. (Lưu ý: lỗ hổng này ở dòng traffic *tổng hợp* né tránh, giống mọi
-lỗ attacker tìm được trước đây.)
+trước kẻ địch thích nghi**.
+
+**Đã sửa — `vote` là cách gộp mới (mặc định).** `ensemble.py` giờ có `--agg`:
+`mean` (cũ), `vote` (mỗi thành viên tự argmax, ensemble chơi hành động đa số,
+hoà thì chọn hành động mạnh tay hơn), `smax` (hành động mạnh nhất mà *bất kỳ*
+thành viên nào chọn). Đo trên dữ liệu thật + tấn công lại (cùng mix 174k, 1000
+ep):
+
+| agg | FP web thật | phát hiện thật | reward attacker tối đa | suppressed khi bị tấn công |
+|---|---|---|---|---|
+| mean | 0.01 | 0.99/1.00/0.99 | +0.123 | tụt còn 0.35 |
+| vote | **0.00** | 0.92/1.00/0.97 | **+0.047** | giữ 0.62–0.98 |
+| smax | 0.04 | 1.00/1.00/1.00 | +0.064 | 0.65–0.99 nhưng FP 0.30 trên benign pad |
+
+→ **`vote` thắng**: giảm ~1/2 mức khai thác của attacker (+0.123 → +0.047),
+khôi phục suppression, FP thật thấp nhất; chỉ mất chút phát hiện RECON/C2
+(0.99 → 0.92/0.97). Đặt `vote` làm mặc định cho `run_agent.py` và
+`eval_checkpoint.py`. `smax` phát hiện thật tốt nhất (1.00) nhưng hăng quá →
+trận lụt benign-pad ăn được nhiều hơn. (Lỗ hổng vẫn ở dòng *tổng hợp* né tránh;
+cột dữ liệu thật là kiểm tra không-né-tránh, ở đó `vote` gần như không mất gì.)
+
+Việc tiếp theo có thể làm: (a) `vote` với quorum khác (2/6, 3/6) để dò điểm
+cân bằng FP↔bền; (b) fine-tune một seed *chống lại* attacker `spread`/`pad`
+này rồi thêm vào ensemble; (c) so `vote` trên toàn test battery, không chỉ 3 tập.
 
 ## Cập nhật mới nhất (2026-09-26, khuya): **v8.1 = ensemble 6 seed** `dqn_g0_s{0..5}`
 

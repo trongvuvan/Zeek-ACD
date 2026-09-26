@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
                          "ensemble of several plain-DQN checkpoints")
     p.add_argument("--normalizer", required=True, action="append",
                     help="path to the matching normalizer_*.json")
+    p.add_argument("--agg", choices=["mean", "vote", "smax"], default="vote",
+                    help="how the ensemble combines members (see ensemble.py). "
+                         "'vote' (majority vote-to-block) is the default: on real "
+                         "traffic it matches mean-Q's false-positive rate (0.00-0.01) "
+                         "while roughly halving how much an adaptive attacker can "
+                         "exploit it. Ignored for a single checkpoint")
     p.add_argument("--log-path", required=True, help="path to the live conn.log to tail")
     p.add_argument("--format", choices=["auto", "tsv", "json"], default="auto")
     p.add_argument("--from-start", action="store_true",
@@ -85,8 +91,8 @@ def main() -> None:
     args = parse_args()
 
     if len(args.checkpoint) > 1:
-        policy, kind = load_ensemble(args.checkpoint, args.normalizer), \
-            f"ensemble({len(args.checkpoint)})"
+        policy, kind = load_ensemble(args.checkpoint, args.normalizer, agg=args.agg), \
+            f"ensemble({len(args.checkpoint)},{args.agg})"
         fx = RawExtractor()
     else:
         with open(args.normalizer[0]) as f:

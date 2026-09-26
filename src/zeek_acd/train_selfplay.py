@@ -69,8 +69,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--defender-checkpoint", type=str, action="append", default=None,
                     help="required for --defender frozen. Repeat (with one "
                          "--defender-normalizer each) to freeze and attack the "
-                         "Q-averaged ENSEMBLE of several plain-DQN checkpoints -- the "
+                         "ENSEMBLE of several plain-DQN checkpoints -- the "
                          "way v8.1 is actually deployed -- rather than a single seed")
+    p.add_argument("--defender-agg", choices=["mean", "vote", "smax"], default="mean",
+                    help="how a frozen ensemble combines members (see ensemble.py): "
+                         "mean-Q (default), majority vote-to-block, or severity-max")
     p.add_argument("--defender-init", type=str, default=None,
                     help="with --defender vanilla: start the trainable defender from this "
                          "plain-DQN checkpoint instead of from scratch. Self-play only "
@@ -146,15 +149,16 @@ class FrozenDefender(DefenderPolicy):
 
     trainable = False
 
-    def __init__(self, checkpoints: list[str], normalizers: list[str] | None = None):
+    def __init__(self, checkpoints: list[str], normalizers: list[str] | None = None,
+                 agg: str = "mean"):
         self.is_ensemble = len(checkpoints) > 1
         if self.is_ensemble:
             from .ensemble import load_ensemble
             if not normalizers or len(normalizers) != len(checkpoints):
                 raise SystemExit("ensemble defender needs one --defender-normalizer "
                                  "per --defender-checkpoint")
-            self.policy = load_ensemble(checkpoints, normalizers)
-            self.kind = f"dqn-ensemble[{len(checkpoints)}]"
+            self.policy = load_ensemble(checkpoints, normalizers, agg=agg)
+            self.kind = f"dqn-ensemble[{len(checkpoints)},{agg}]"
         else:
             self.policy, self.kind = load_policy(checkpoints[0])
 
@@ -297,7 +301,8 @@ def main() -> None:
     if args.defender in ("frozen", "minimax-frozen"):
         if not args.defender_checkpoint:
             raise SystemExit(f"--defender {args.defender} requires --defender-checkpoint")
-        defender = FrozenDefender(args.defender_checkpoint, args.defender_normalizer)
+        defender = FrozenDefender(args.defender_checkpoint, args.defender_normalizer,
+                                  agg=args.defender_agg)
         defender_agent = None
         defender_buf = None
         print(f"[selfplay] frozen {defender.kind} defender from {args.defender_checkpoint}; "

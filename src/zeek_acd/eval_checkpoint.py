@@ -41,6 +41,10 @@ def parse_args() -> argparse.Namespace:
                     help="repeat (with one --normalizer each) to score the Q-averaged "
                          "ensemble of several plain-DQN checkpoints")
     p.add_argument("--normalizer", required=True, action="append")
+    p.add_argument("--agg", choices=["mean", "vote", "smax"], default="mean",
+                    help="how an ensemble combines members: mean-Q (default), majority "
+                         "vote-to-block, or severity-max (block if any member would). "
+                         "Ignored for a single checkpoint")
     p.add_argument("--data", required=True, help="glob for conn.log.labeled files")
     p.add_argument("--max-records-per-file", type=int, default=None)
     p.add_argument("--mode", choices=["flat", "env"], default="flat")
@@ -95,8 +99,8 @@ def main() -> None:
 
     records = load_conn_log_labeled(args.data, args.max_records_per_file)
     if len(args.checkpoint) > 1:
-        policy, kind = load_ensemble(args.checkpoint, args.normalizer), \
-            f"ensemble({len(args.checkpoint)})"
+        policy, kind = load_ensemble(args.checkpoint, args.normalizer, agg=args.agg), \
+            f"ensemble({len(args.checkpoint)},{args.agg})"
         fx = RawExtractor()
     else:
         with open(args.normalizer[0]) as f:
