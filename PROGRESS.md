@@ -2,7 +2,23 @@
 
 Cập nhật: 2026-09-26 (tối). Dùng file này để tiếp tục ở phiên sau.
 
-## Trạng thái hiện tại (2026-09-26, tối): dùng **v8 = ensemble 4 seed, `--gamma 0`**
+## Cập nhật mới nhất (2026-09-26, khuya): **v8.1 = ensemble 6 seed** `dqn_g0_s{0..5}`
+
+Thêm seed 4 (ep600) và 5 (ep350), cùng công thức v8. Ensemble 6 giống v8 trên
+mọi tập benign (FP 0.00–0.01), nhỉnh hơn trên IoT-23 34-1 (RECON 0.99, C2
+0.99). Chạy live: như lệnh v8 bên dưới nhưng `for s in 0 1 2 3 4 5`.
+
+Attacker (self-play, defender đóng băng):
+- Train chung có trộn dữ liệu thật (`--real-frac 0.5/0.75`, thư mục
+  `joint_g0s2_rf{50,75}`): defender không hỏng trên dữ liệu thật (live_now FP
+  0.00) nhưng HTTPS giữ lại FP 0.02→0.08, và attacker mới tấn công nó lại tìm
+  ra đòn gây FP (+0.046). **Không dùng.**
+- Attacker 1000 ep vs g0_s0 / g0_s1: chỉ +0.01–0.03. Lỗ hổng khác nhau theo
+  seed, đều trên traffic tổng hợp: s0 OTHER_MAL+`pad` (0.67), s1 DOS+`spread`
+  (0/10). Chưa đo được ensemble (`--defender frozen` chỉ nhận 1 checkpoint).
+- Bảng đầy đủ mọi phiên bản defender/attacker: README, mục "Training versions".
+
+## Trạng thái (2026-09-26, tối): v8 = ensemble 4 seed, `--gamma 0`
 
 Model khuyến nghị: trung bình Q của 4 checkpoint `checkpoints/dqn_g0_s{0,1,2,3}/agent_best.pt`
 (s0=ep350, s1/s2/s3=ep550; mỗi cái kèm `normalizer_best.json`). Cùng dữ liệu
