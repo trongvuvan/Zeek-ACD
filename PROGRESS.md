@@ -2,6 +2,42 @@
 
 Cập nhật: 2026-09-26 (tối). Dùng file này để tiếp tục ở phiên sau.
 
+## Cập nhật mới nhất (2026-09-26, đêm): **tấn công ensemble — ensemble DỄ bị khai thác hơn 1 seed**
+
+Sửa `train_selfplay.py`: `--defender frozen` giờ nhận nhiều cặp
+`--defender-checkpoint`/`--defender-normalizer` để đóng băng và tấn công
+**ensemble Q-trung-bình** (`ensemble.load_ensemble`) — tức là đúng cái đang
+triển khai (v8.1), thay vì một seed. Ở chế độ ensemble, env phát đặc trưng
+**thô** (`RawExtractor`), mỗi thành viên tự chuẩn hoá.
+
+Chạy đối chứng cùng điều kiện (cùng mix 174k: toàn bộ IoT-23 + MTA + benign,
+cùng 1000 episode):
+
+- **1 seed `dqn_g0_s2`** (`selfplay_g0s2frozen_bigmix/`): attacker tối đa
+  **+0.049**, bị chặn (suppressed) **0.84–0.98** suốt run — một seed vẫn khoá
+  được kẻ tấn công.
+- **ensemble 6 seed** (`selfplay_v81ensemblefrozen_long/`): attacker tối đa
+  **+0.123** (gấp 2.5 lần), suppressed tụt còn **0.35–0.54**. Nó trộn C2/DOS/
+  OTHER_MAL có `pad`/`jitter` (phát hiện trên dòng né tránh tụt còn 0.35–0.50)
+  với một trận lụt BENIGN `pad`/`jitter` (ensemble ra tay 0.09–0.22 → false
+  positive kiểu DoS).
+
+**Lý do (cơ học):** lấy trung bình Q **làm mềm argmax**. Một seed đơn cam kết
+dứt khoát `BLOCK_SRC`/`ISOLATE_HOST` với traffic khả nghi → kẻ tấn công bị khoá
+hết episode. Trung bình 6 seed kéo điểm của hành động dứt khoát về giữa đám →
+trên traffic `pad`/`jitter`, argmax của ensemble trượt sang `ALLOW`/`LOG_ALERT`
+thường xuyên hơn → kẻ tấn công không bị chặn, cứ phát tiếp, và ăn cả false
+positive trên benign đã pad.
+
+Ensemble sinh ra để giảm **phương sai FP trên dữ liệu thật cố định** (v6 các
+seed swing FP 0.04–0.77) — và vẫn làm được: trên benign thật (không né tránh)
+FP 0.00–0.01, phát hiện 0.97–1.00. Nhưng **mean-Q là cách gộp sai cho độ bền
+trước kẻ địch thích nghi**. Việc tiếp theo: đổi cách `ensemble.py` gộp thành
+**severity-max / vote-to-block** (chặn nếu *bất kỳ* thành viên nào chặn, hoặc
+đủ số phiếu) để giữ lại cú block dứt khoát của một seed — sửa cách gộp, không
+sửa model. (Lưu ý: lỗ hổng này ở dòng traffic *tổng hợp* né tránh, giống mọi
+lỗ attacker tìm được trước đây.)
+
 ## Cập nhật mới nhất (2026-09-26, khuya): **v8.1 = ensemble 6 seed** `dqn_g0_s{0..5}`
 
 Thêm seed 4 (ep600) và 5 (ep350), cùng công thức v8. Ensemble 6 giống v8 trên

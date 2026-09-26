@@ -61,12 +61,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hidden", type=int, default=128)
     p.add_argument("--defender", choices=["vanilla", "frozen", "minimax-frozen"],
                     default="vanilla")
-    p.add_argument("--defender-normalizer", type=str, default=None,
+    p.add_argument("--defender-normalizer", type=str, action="append", default=None,
                     help="normalizer JSON saved next to --defender-checkpoint; a frozen "
                          "defender must see features scaled the way it was trained, so "
-                         "pass this whenever you freeze one")
-    p.add_argument("--defender-checkpoint", type=str, default=None,
-                    help="required for --defender frozen")
+                         "pass this whenever you freeze one. Repeat once per "
+                         "--defender-checkpoint to attack a Q-averaged ensemble")
+    p.add_argument("--defender-checkpoint", type=str, action="append", default=None,
+                    help="required for --defender frozen. Repeat (with one "
+                         "--defender-normalizer each) to freeze and attack the "
+                         "Q-averaged ENSEMBLE of several plain-DQN checkpoints -- the "
+                         "way v8.1 is actually deployed -- rather than a single seed")
     p.add_argument("--defender-init", type=str, default=None,
                     help="with --defender vanilla: start the trainable defender from this "
                          "plain-DQN checkpoint instead of from scratch. Self-play only "
@@ -130,12 +134,29 @@ class VanillaDefender(DefenderPolicy):
 
 class FrozenDefender(DefenderPolicy):
     """Any already-trained defender, held fixed. ``load_policy`` works out
-    which kind the checkpoint holds, so the same flag covers both."""
+    which kind a single checkpoint holds, so the same flag covers minimax
+    and plain DQN. With several checkpoints it freezes the Q-averaged
+    ensemble (``ensemble.load_ensemble``) -- the deployed v8.1 form -- so
+    the attacker is measured against what actually runs, not one seed.
+
+    A single frozen defender consumes features the env already normalized
+    with its one normalizer; the ensemble instead takes a RAW feature
+    vector and each member applies its own normalizer, so ``main`` swaps
+    the env's extractor to ``RawExtractor`` when ``is_ensemble`` is set."""
 
     trainable = False
 
-    def __init__(self, checkpoint: str):
-        self.policy, self.kind = load_policy(checkpoint)
+    def __init__(self, checkpoints: list[str], normalizers: list[str] | None = None):
+        self.is_ensemble = len(checkpoints) > 1
+        if self.is_ensemble:
+            from .ensemble import load_ensemble
+            if not normalizers or len(normalizers) != len(checkpoints):
+                raise SystemExit("ensemble defender needs one --defender-normalizer "
+                                 "per --defender-checkpoint")
+            self.policy = load_ensemble(checkpoints, normalizers)
+            self.kind = f"dqn-ensemble[{len(checkpoints)}]"
+        else:
+            self.policy, self.kind = load_policy(checkpoints[0])
 
     def act(self, obs):
         return self.policy(obs)[0]
@@ -231,17 +252,31 @@ def main() -> None:
         train_records, eval_records = train_eval_split(records, seed=args.seed)
     print(f"[selfplay] {len(train_records)} train / {len(eval_records)} eval records")
 
+    # An ensemble defender normalizes per-member from a raw feature vector,
+    # so the env must hand it un-normalized features (RawExtractor) rather
+    # than pre-scaling with one shared normalizer.
+    ensemble_mode = (args.defender in ("frozen", "minimax-frozen")
+                     and args.defender_checkpoint and len(args.defender_checkpoint) > 1)
+    if ensemble_mode:
+        from .ensemble import RawExtractor
+        normalizer = RunningNormalizer()  # unused by the ensemble; only for the save line
+        fx_train = RawExtractor()
+        fx_eval = RawExtractor()
+        print(f"[selfplay] ensemble of {len(args.defender_checkpoint)} defenders; "
+              f"env emits raw features, each member normalizes itself")
     # A frozen defender was trained against a particular feature scaling;
     # refitting a fresh normalizer here would hand it inputs it has never
     # seen and make it look far more exploitable than it is.
-    if args.defender_normalizer:
-        with open(args.defender_normalizer) as f:
+    elif args.defender_normalizer:
+        with open(args.defender_normalizer[0]) as f:
             normalizer = RunningNormalizer.from_dict(json.load(f))
-        print(f"[selfplay] using frozen normalizer {args.defender_normalizer}")
+        print(f"[selfplay] using frozen normalizer {args.defender_normalizer[0]}")
+        fx_train = FeatureExtractor(normalizer)
+        fx_eval = FeatureExtractor(normalizer)
     else:
         normalizer = RunningNormalizer()
-    fx_train = FeatureExtractor(normalizer)
-    fx_eval = FeatureExtractor(normalizer)
+        fx_train = FeatureExtractor(normalizer)
+        fx_eval = FeatureExtractor(normalizer)
     payoff = (PayoffTable.from_dict(json.load(open(args.payoff))) if args.payoff
               else PayoffTable.default())
 
@@ -262,7 +297,7 @@ def main() -> None:
     if args.defender in ("frozen", "minimax-frozen"):
         if not args.defender_checkpoint:
             raise SystemExit(f"--defender {args.defender} requires --defender-checkpoint")
-        defender = FrozenDefender(args.defender_checkpoint)
+        defender = FrozenDefender(args.defender_checkpoint, args.defender_normalizer)
         defender_agent = None
         defender_buf = None
         print(f"[selfplay] frozen {defender.kind} defender from {args.defender_checkpoint}; "

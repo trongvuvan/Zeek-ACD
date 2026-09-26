@@ -362,6 +362,8 @@ defender its average reward measures how exploitable that defender is.
 | vs v8 seed 1, long | `selfplay_g0s1frozen_long/` | g0_s1, frozen, 1000 ep | ±0.02; settles on DOS + `spread` (det 0/10), but is suppressed 97% of the time | small hole, seed-specific |
 | vs v8 seed 4, long | `selfplay_g0s4frozen_long/` | g0_s4, frozen, 1000 ep | max +0.039; OTHER_MAL + `spread` (det 0.67), C2 det 0.63 | `spread` again |
 | vs v8 seed 5, long | `selfplay_g0s5frozen_long/` | g0_s5, frozen, 1000 ep | max +0.044; C2 + `spread` (det 0.48) | `spread` again |
+| vs v8 seed 2, big mix | `selfplay_g0s2frozen_bigmix/` | g0_s2, frozen, 1000 ep, full IoT-23 + MTA + benign (174k records, no per-file cap) | max +0.049; suppressed 0.84–0.98 the whole run; settles on `jitter`/`spread`/`slow` with the attacker mostly blocked | control for the ensemble row below — a single seed keeps the attacker suppressed even on the larger mix |
+| **vs v8.1 ensemble, long** | `selfplay_v81ensemblefrozen_long/` | the **deployed 6-model ensemble** (`ensemble.load_ensemble`), frozen, 1000 ep, same 174k mix | max **+0.123** (2.5× the single seed above); suppression falls to **0.35–0.54**; the attacker mixes padded/jittered C2/DOS/OTHER_MAL (ensemble detection on the evaded stream drops to 0.35–0.50) with a flood of padded/jittered BENIGN (ensemble acts on 0.09–0.22 of it) | **the Q-averaged ensemble is *more* exploitable by an adaptive attacker than any single seed** — see below |
 
 Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
 synthetic stream during attacker training, so the first frozen runs
@@ -371,11 +373,34 @@ loaded normalizer.
 Every hole the attacker found against a gamma-0 defender is in *synthetic*
 evasive traffic (DOS or malware with `jitter`, `spread` or `pad`), and each
 seed has a different one; on real DOS / C2 the same models detect
-0.97–1.00. `--defender frozen` takes one checkpoint, so the ensemble itself
-has not been attacked yet. `spread` (a new destination per connection) is
+0.97–1.00. `spread` (a new destination per connection) is
 the attacker's best move against 3 of the 4 seeds attacked at length, so
 real captures of C2 over rotating infrastructure are the most useful data
 to add next.
+
+**The ensemble is more exploitable than its members (2026-09-26).**
+`--defender frozen` now takes several `--defender-checkpoint`/`--defender-normalizer`
+pairs and freezes the Q-averaged ensemble, so the attacker can be trained
+against exactly what is deployed (v8.1) instead of one seed. Attacking the
+6-model ensemble and a single seed under identical conditions (same 174k
+mix, same 1000 episodes) gives the opposite of what you'd hope: the
+attacker beats the ensemble by **+0.123** but the single seed by only
++0.049, and against the ensemble it stops being suppressed (0.35–0.54 vs
+0.84–0.98). The reason is mechanical: averaging Q *softens the argmax*. A
+single seed commits hard to `BLOCK_SRC`/`ISOLATE_HOST` on suspicious
+traffic and the attacker is blocked for the rest of the episode; averaging
+six seeds' Q pulls the decisive action's score toward the pack, so on
+padded/jittered traffic the ensemble's argmax slips to `ALLOW`/`LOG_ALERT`
+more often — the attacker is never suppressed, keeps emitting, and also
+draws false positives on padded benign. Ensembling was adopted to cut the
+false-positive *variance on fixed real data* (v6 seeds swung FP 0.04–0.77),
+and it still does that — on real un-evaded benign the ensemble's FP is
+0.00–0.01 and its detection 0.97–1.00. But mean-Q is the wrong aggregation
+for *robustness to an adaptive adversary*: a **severity-max or
+vote-to-block** rule (block if any member would, or if a quorum would)
+would keep the hard block a single seed commits to. That is the next thing
+to try — as a change to how `ensemble.py` combines members, not to the
+models.
 
 ## Caveats / what a v2 should improve
 
