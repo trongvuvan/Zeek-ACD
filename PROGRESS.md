@@ -16,6 +16,13 @@ Attacker (self-play, defender đóng băng):
 - Attacker 1000 ep vs g0_s0 / g0_s1: chỉ +0.01–0.03. Lỗ hổng khác nhau theo
   seed, đều trên traffic tổng hợp: s0 OTHER_MAL+`pad` (0.67), s1 DOS+`spread`
   (0/10). Chưa đo được ensemble (`--defender frozen` chỉ nhận 1 checkpoint).
+- Attacker 1000 ep vs g0_s4 / g0_s5: tối đa +0.039 / +0.044, đều chọn
+  `spread` (C2 det 0.48–0.63 trên traffic tổng hợp). `spread` là đòn tốt nhất
+  ở 3/4 seed → dữ liệu nên thêm tiếp: C2 thật dùng hạ tầng xoay vòng/fast-flux.
+- Kiểm chứng thêm v8.1: log live mới 17:46–20:25 (`data/live0926b`, 13.4k
+  flow) FP 0.00, det 1.00; traffic bảo trì máy chủ chưa từng thấy
+  (`data/benign_ops`: dnf, git clone, pip, wget; 234 flow) FP 0.00 (v6 0.27,
+  v4 0.40).
 - Bảng đầy đủ mọi phiên bản defender/attacker: README, mục "Training versions".
 
 ## Trạng thái (2026-09-26, tối): v8 = ensemble 4 seed, `--gamma 0`
@@ -348,6 +355,8 @@ thưởng phát hiện giữ nguyên. FP ổn định 0.01–0.06 suốt ep200�
 | `data/benign_heldout/` | benign HTTPS sạch, site khác hẳn (`tools/sites_heldout.txt`) | **test** |
 | `data/benign_heldout_web/` | như trên, chỉ ssl/http | **test** |
 | `data/live0926/` | log live 2026-09-26 16:33–17:46, nhãn theo IOC, bỏ external không khớp | **test** |
+| `data/live0926b/` | log live 2026-09-26 17:46–20:25 | **test** |
+| `data/benign_ops/` | traffic bảo trì máy chủ (dnf/git/pip/wget) từ `192.168.6.135` | **test** |
 | `data/selfbroken_{train,test}/` | traffic web của `192.168.6.135` bị hỏng checksum, tách tại 16:57 | chỉ thử nghiệm |
 
 Dựng lại:

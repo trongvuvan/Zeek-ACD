@@ -330,7 +330,7 @@ used to pick a checkpoint. Detailed notes (Vietnamese) are in `PROGRESS.md`.
 | v7a | `dqn_v7a/` | v6 + checksum-broken self traffic | fixes broken traffic, MTA-2026 FP → 0.52 | negative |
 | v7b | `dqn_v7b/` | v6 with benign repeat 8 | live0926 FP 0.36 | negative |
 | v8 | `dqn_g0_s{0,1,2,3}/` | v6 data, **`--gamma 0`**, 4 seeds, Q-averaged ensemble (`ensemble.py`) | FP 0.00–0.01 on every clean benign test set, det 0.96–1.00; every seed alike | superseded by v8.1 |
-| **v8.1** | `dqn_g0_s{0..5}/` | v8 + seeds 4 and 5 (6-model ensemble) | same FP as v8 (0.00–0.01); IoT-23 34-1 RECON 0.96 → 0.99, C2 0.97 → 0.99 | **recommended** |
+| **v8.1** | `dqn_g0_s{0..5}/` | v8 + seeds 4 and 5 (6-model ensemble) | same FP as v8 (0.00–0.01); IoT-23 34-1 RECON 0.96 → 0.99, C2 0.97 → 0.99. New live traffic (`live0926b`, 13.4k flows): FP 0.00, det 1.00. Unseen server-maintenance traffic (`benign_ops`: dnf, git, pip, wget; 234 flows): FP 0.00 (v6 0.27, v4 0.40) | **recommended** |
 | joint rf50 / rf75 | `joint_g0s2_rf50/`, `joint_g0s2_rf75/` | self-play fine-tune of a v8 seed against a learning attacker, 50% / 75% of each defender batch from real traffic (`--real-frac`) | stays sound on real data (live_now FP 0.00 throughout), but held-out HTTPS FP 0.02 → 0.08, MTA C2 det 1.00 → 0.93 | not adopted |
 
 Why gamma 0: the flow sequence is exogenous, so the defender's action only
@@ -359,6 +359,8 @@ defender its average reward measures how exploitable that defender is.
 | vs joint rf50 | `selfplay_jointrf50frozen/` | joint rf50 ep500, frozen | max +0.046; back to the FP exploit (93% harmless traffic with `spread`, defender acts on 10%) | joint training made the defender **more** exploitable |
 | vs v8 seed 0, long | `selfplay_g0s0frozen_long/` | g0_s0, frozen, 1000 ep | +0.01–0.03; settles on OTHER_MAL + `pad` (det 0.67) | small hole, seed-specific |
 | vs v8 seed 1, long | `selfplay_g0s1frozen_long/` | g0_s1, frozen, 1000 ep | ±0.02; settles on DOS + `spread` (det 0/10), but is suppressed 97% of the time | small hole, seed-specific |
+| vs v8 seed 4, long | `selfplay_g0s4frozen_long/` | g0_s4, frozen, 1000 ep | max +0.039; OTHER_MAL + `spread` (det 0.67), C2 det 0.63 | `spread` again |
+| vs v8 seed 5, long | `selfplay_g0s5frozen_long/` | g0_s5, frozen, 1000 ep | max +0.044; C2 + `spread` (det 0.48) | `spread` again |
 
 Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
 synthetic stream during attacker training, so the first frozen runs
@@ -369,7 +371,10 @@ Every hole the attacker found against a gamma-0 defender is in *synthetic*
 evasive traffic (DOS or malware with `jitter`, `spread` or `pad`), and each
 seed has a different one; on real DOS / C2 the same models detect
 0.97–1.00. `--defender frozen` takes one checkpoint, so the ensemble itself
-has not been attacked yet.
+has not been attacked yet. `spread` (a new destination per connection) is
+the attacker's best move against 3 of the 4 seeds attacked at length, so
+real captures of C2 over rotating infrastructure are the most useful data
+to add next.
 
 ## Caveats / what a v2 should improve
 
