@@ -373,6 +373,7 @@ class per tactic.
 | vs ensemble, `vote2` | `selfplay_v81ens_vote2_long/` | 6-model ensemble, **vote quorum ≥2** to block, frozen, 1000 ep, same mix | max +0.041; suppression holds 0.62–0.98 | quorum-2 is a touch more robust than plain `vote` at ≤0.01 real FP |
 | vs ensemble, `vote3` | `selfplay_v81ens_vote3_long/` | 6-model ensemble, **vote quorum ≥3** (true majority) to block, frozen, 1000 ep, same mix | max +0.031; suppression holds 0.74–0.97; real FP 0.00, detection unchanged | most robust aggregation measured; best default candidate pending a live FP soak |
 | vs ensemble, `smax` | `selfplay_v81ens_smax_long/` | 6-model ensemble, **severity-max**, frozen, 1000 ep, same mix | max +0.064; suppression 0.65–0.99 but FP 0.30 on padded benign | too eager: the benign-FP DoS scores more against it than against `vote` |
+| **ATT&CK catalog vs `vote`** | `attack_v81ens_vote/` | `--attacker attack` (16 ATT&CK techniques), 6-model ensemble `vote`, frozen, 1000 ep, same mix | max **+0.076** (vs +0.047 for the classic attacker on the same defender); T1571 non-standard-port C2 evades completely (action_rate 0.00), T1071.jitter 0.33, T1041 exfil 0.31 | the ATT&CK action space finds a stronger, *named* exploit — see "The attacker's action space" |
 
 Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
 synthetic stream during attacker training, so the first frozen runs
@@ -508,6 +509,30 @@ PYTHONPATH=src .venv/bin/python -m zeek_acd.train_selfplay --attacker attack \
   --payoff payoffs/low_fp.json --defender frozen $D --defender-agg vote \
   --episodes 1000 --eval-every 50 --checkpoint-dir checkpoints/attack_v81ens_vote
 ```
+
+**What it found (2026-09-28, `attack_v81ens_vote/`).** Against the frozen
+v8.1 ensemble with `vote` aggregation — the same defender the *classic*
+attacker beats by only +0.047 — the ATT&CK attacker reaches **+0.076**, a
+markedly stronger exploit, because the richer action space lets it find and
+concentrate on the defender's blind spots. At convergence (ep1000) the
+per-technique reaction shows exactly where they are:
+
+| technique | defender action_rate | reading |
+|---|---|---|
+| **T1571 Non-Standard Port C2** | **0.00** | the ensemble *never* acts on C2 to a non-standard port — the training C2 is almost all on 443, so simply moving off 443 evades it entirely |
+| T1071.001.jitter (jittered beacon) | 0.33 | jitter breaks the beacon-regularity feature; evades ~2/3 of the time |
+| T1041 Exfiltration over C2 (large upload) | 0.31 | padded-byte exfil looks like an ordinary large session |
+| T1071.001 (plain web beacon) | 0.71 | the un-evaded beacon is mostly caught |
+| T1568.002 DGA / fast-flux | suppressed 711/713 | picked often but blocked early and stays blocked |
+| T1498 / T1498.slow (network / slow DoS) | 0.67 / 1.00 | DoS is caught |
+
+The headline is **T1571**: C2 on a non-standard port is a complete miss, not
+a partial one. That is a *data* gap (the model has only ever seen C2 on 443),
+which is the right kind of finding — it names the capture to add next
+(non-standard-port and jittered C2), rather than a modelling artefact. The
+classic 5×5 attacker could not surface this because "C2 + evasion" never
+included "keep the odd port". This is the payoff of the ATT&CK action space:
+findings map to named techniques and to concrete data to collect.
 
 ## Caveats / what a v2 should improve
 

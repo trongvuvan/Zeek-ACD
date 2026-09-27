@@ -31,9 +31,20 @@ thật vì 6 seed đã đồng thuận. **`vote3` là ứng viên default tốt 
 chỉ chờ soak FP live dài hơn trước khi đổi default. Runs:
 `checkpoints/selfplay_v81ens_vote{2,3}_long/`.
 
-Việc tiếp theo: (a) chạy attacker ATT&CK đầy đủ vs ensemble `vote` để xem kỹ thuật
-nào lọt; (b) train defender chống lại chính attacker ATT&CK đó (thêm episode dữ
-liệu thật xen kẽ để không hỏng phân phối thật, như bài học self-play cũ).
+**Kết quả attacker ATT&CK vs ensemble `vote`** (`checkpoints/attack_v81ens_vote/`,
+2026-09-28): attacker ATT&CK đạt **+0.076** — mạnh hơn attacker cổ điển (+0.047)
+trên cùng defender, vì không gian hành động giàu hơn tìm đúng điểm mù. Ở ep1000:
+- **T1571 C2 cổng không chuẩn: action_rate 0.00** — ensemble KHÔNG BAO GIỜ ra tay
+  với C2 sang cổng khác 443. Đây là lỗ hổng **dữ liệu**: C2 trong tập train gần như
+  toàn trên 443. → cần capture C2 cổng không chuẩn / có jitter.
+- T1071.001.jitter (beacon jitter) 0.33; T1041 exfil (upload lớn) 0.31.
+- Chặn tốt: T1568.002 DGA/fast-flux (suppress 711/713), T1498/slow DoS 0.67/1.00,
+  beacon T1071.001 thường 0.71.
+Attacker cổ điển không lộ được T1571 vì "C2 + né" chưa từng gồm "giữ cổng lẻ".
+
+Việc tiếp theo: (a) so sánh attacker ATT&CK vs `vote3`/`mean` xem quorum cao có
+bịt T1571/jitter không; (b) train defender chống attacker ATT&CK (xen kẽ episode
+dữ liệu thật để không hỏng phân phối thật); (c) thêm dữ liệu C2 cổng-lẻ/jitter.
 
 ## Cập nhật mới nhất (2026-09-26, đêm): **tấn công ensemble — ensemble DỄ bị khai thác hơn 1 seed**
 
