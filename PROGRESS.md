@@ -42,9 +42,20 @@ trên cùng defender, vì không gian hành động giàu hơn tìm đúng đi�
   beacon T1071.001 thường 0.71.
 Attacker cổ điển không lộ được T1571 vì "C2 + né" chưa từng gồm "giữ cổng lẻ".
 
-Việc tiếp theo: (a) so sánh attacker ATT&CK vs `vote3`/`mean` xem quorum cao có
-bịt T1571/jitter không; (b) train defender chống attacker ATT&CK (xen kẽ episode
-dữ liệu thật để không hỏng phân phối thật); (c) thêm dữ liệu C2 cổng-lẻ/jitter.
+**Attacker ATT&CK vs `vote3`** (`checkpoints/attack_v81ens_vote3/`, 2026-09-28):
+đảo ngược thứ hạng quorum! `vote3` (bền nhất trước attacker cổ điển, +0.031) lại
+bị attacker ATT&CK khai thác tới **+0.132** (tệ hơn vs `vote` +0.076). Nguyên nhân:
+**T1041 exfil** — tại đỉnh, 633 flow exfil, **0 bị chặn** (action_rate 0.28,
+suppression tụt còn 0.04); trong khi `vote` chặn đủ để suppress nguồn (283/380).
+Cơ chế: quorum cao nâng ngưỡng *block* → exfil (phiên TLS to nhưng trông thường)
+không đạt 3/6 → không bị chặn → nguồn không bị suppress → attacker phun exfil vô hạn.
+→ quorum KHÔNG phải núm bền đơn điệu; `vote3` đổi độ-bền-cổ-điển lấy điểm-mù-exfil.
+Đừng đổi default sang `vote3` chỉ dựa vào số cổ điển. Ưu tiên: **phát hiện T1041
+exfil** (feature byte-volume / payoff riêng cho exfil) — kỹ thuật trội ở cả hai agg.
+
+Việc tiếp theo: (a) train defender chống attacker ATT&CK (xen kẽ episode dữ liệu
+thật để không hỏng phân phối thật); (b) thêm dữ liệu C2 cổng-lẻ/jitter + exfil;
+(c) cân nhắc payoff/feature nhắm T1041.
 
 ## Cập nhật mới nhất (2026-09-26, đêm): **tấn công ensemble — ensemble DỄ bị khai thác hơn 1 seed**
 

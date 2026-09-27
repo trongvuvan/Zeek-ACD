@@ -374,6 +374,7 @@ class per tactic.
 | vs ensemble, `vote3` | `selfplay_v81ens_vote3_long/` | 6-model ensemble, **vote quorum ≥3** (true majority) to block, frozen, 1000 ep, same mix | max +0.031; suppression holds 0.74–0.97; real FP 0.00, detection unchanged | most robust aggregation measured; best default candidate pending a live FP soak |
 | vs ensemble, `smax` | `selfplay_v81ens_smax_long/` | 6-model ensemble, **severity-max**, frozen, 1000 ep, same mix | max +0.064; suppression 0.65–0.99 but FP 0.30 on padded benign | too eager: the benign-FP DoS scores more against it than against `vote` |
 | **ATT&CK catalog vs `vote`** | `attack_v81ens_vote/` | `--attacker attack` (16 ATT&CK techniques), 6-model ensemble `vote`, frozen, 1000 ep, same mix | max **+0.076** (vs +0.047 for the classic attacker on the same defender); T1571 non-standard-port C2 evades completely (action_rate 0.00), T1071.jitter 0.33, T1041 exfil 0.31 | the ATT&CK action space finds a stronger, *named* exploit — see "The attacker's action space" |
+| **ATT&CK catalog vs `vote3`** | `attack_v81ens_vote3/` | `--attacker attack`, 6-model ensemble `vote3` (quorum ≥3), frozen, 1000 ep, same mix | max **+0.132** (worse than vs `vote`, though `vote3` was the *best* vs the classic attacker); driven by T1041 exfil — 633 flows, 0 suppressed | higher quorum trades classic robustness for an **exfil blind spot**; the quorum is not a monotonic dial |
 
 Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
 synthetic stream during attacker training, so the first frozen runs
@@ -533,6 +534,24 @@ which is the right kind of finding — it names the capture to add next
 classic 5×5 attacker could not surface this because "C2 + evasion" never
 included "keep the odd port". This is the payoff of the ATT&CK action space:
 findings map to named techniques and to concrete data to collect.
+
+**The ATT&CK attacker overturns the quorum ranking (2026-09-28,
+`attack_v81ens_vote3/`).** Run against the `vote3` ensemble — the aggregation
+that was the *most* robust to the classic attacker (+0.031) — the ATT&CK
+attacker peaks at **+0.132**, *worse* than against plain `vote` (+0.076). The
+cause is **T1041 exfiltration**: at that peak the attacker sent 633 padded
+exfil flows and **none were suppressed** (action_rate 0.28, episode
+suppression collapsed to 0.04), whereas under `vote` the same technique gets
+blocked enough to suppress the source (283 of 380 suppressed). Mechanism: a
+higher quorum raises the bar to *block*, so borderline exfil (a large but
+otherwise ordinary-looking TLS session) never reaches the 3-of-6 threshold;
+and because blocking is the only thing that suppresses the source, once
+exfil isn't blocked the attacker streams it without limit. So the quorum is
+not a monotonic robustness dial: `vote3` trades classic-attacker robustness
+for an exfiltration blind spot. This is a caution against flipping the live
+default to `vote3` on the classic numbers alone, and it re-points the
+priority at **T1041 exfil detection** (byte-volume features / an exfil-
+specific payoff), the technique that dominates against both aggregations.
 
 ## Caveats / what a v2 should improve
 
