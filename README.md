@@ -334,6 +334,7 @@ used to pick a checkpoint. Detailed notes (Vietnamese) are in `PROGRESS.md`.
 | **v8.1** | `dqn_g0_s{0..5}/` | v8 + seeds 4 and 5 (6-model ensemble) | same FP as v8 (0.00–0.01); IoT-23 34-1 RECON 0.96 → 0.99, C2 0.97 → 0.99. New live traffic (`live0926b`, 13.4k flows): FP 0.00, det 1.00. Unseen server-maintenance traffic (`benign_ops`: dnf, git, pip, wget; 234 flows): FP 0.00 (v6 0.27, v4 0.40) | **recommended** |
 | v9 | `dqn_v9_s{0,1}/` | v8.1 recipe + early live traffic of 2026-09-26 (16:33–17:46, labeled with 2025 IOCs only, `data/live0926_2025`, ×3), 2 seeds | no better than v8.1: IoT-23 34-1 RECON 0.94 vs 0.99, MTA-2026 OTHER_MAL 0.98 vs 1.00, held-out web FP 0.02 vs 0.01 -- more replays of the same scenarios add nothing | not adopted |
 | joint rf50 / rf75 | `joint_g0s2_rf50/`, `joint_g0s2_rf75/` | self-play fine-tune of a v8 seed against a learning attacker, 50% / 75% of each defender batch from real traffic (`--real-frac`) | stays sound on real data (live_now FP 0.00 throughout), but held-out HTTPS FP 0.02 → 0.08, MTA C2 det 1.00 → 0.93 | not adopted |
+| ATT&CK-hardened | `defend_attack_s2_rf50/` (ep950) | g0_s2 fine-tuned against the **ATT&CK** attacker, gamma 0, 50% real traffic per batch | real detection *improves* (IoT-23 34-1 RECON 0.92 → **0.99**, C2 0.97 → **1.00**; live2026/MTA-2026 FP 0.00, det 1.00), but held-out web FP 0.01 → 0.08 | not adopted — research result; exfil/odd-port gaps want real data, not synthetic hardening |
 
 Why gamma 0: the flow sequence is exogenous, so the defender's action only
 matters for the current flow. With gamma 0.95 the target also carried
@@ -375,6 +376,7 @@ class per tactic.
 | vs ensemble, `smax` | `selfplay_v81ens_smax_long/` | 6-model ensemble, **severity-max**, frozen, 1000 ep, same mix | max +0.064; suppression 0.65–0.99 but FP 0.30 on padded benign | too eager: the benign-FP DoS scores more against it than against `vote` |
 | **ATT&CK catalog vs `vote`** | `attack_v81ens_vote/` | `--attacker attack` (16 ATT&CK techniques), 6-model ensemble `vote`, frozen, 1000 ep, same mix | max **+0.076** (vs +0.047 for the classic attacker on the same defender); T1571 non-standard-port C2 evades completely (action_rate 0.00), T1071.jitter 0.33, T1041 exfil 0.31 | the ATT&CK action space finds a stronger, *named* exploit — see "The attacker's action space" |
 | **ATT&CK catalog vs `vote3`** | `attack_v81ens_vote3/` | `--attacker attack`, 6-model ensemble `vote3` (quorum ≥3), frozen, 1000 ep, same mix | max **+0.132** (worse than vs `vote`, though `vote3` was the *best* vs the classic attacker); driven by T1041 exfil — 633 flows, 0 suppressed | higher quorum trades classic robustness for an **exfil blind spot**; the quorum is not a monotonic dial |
+| **defender fine-tuned vs ATT&CK** | `defend_attack_s2_rf50/` | `--defender vanilla`, warm-started from g0_s2 (gamma 0), 50% real traffic per batch, ATT&CK attacker co-trained, 1000 ep | attacker driven to **−0.006** (retreats to benign cover); in self-play T1571 and exfil now caught 1.00 | closes the synthetic holes and *improves* real IoT-23 detection, at a clean-web FP cost — see below |
 
 Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
 synthetic stream during attacker training, so the first frozen runs
@@ -552,6 +554,30 @@ for an exfiltration blind spot. This is a caution against flipping the live
 default to `vote3` on the classic numbers alone, and it re-points the
 priority at **T1041 exfil detection** (byte-volume features / an exfil-
 specific payoff), the technique that dominates against both aggregations.
+
+**Closing the loop: a defender fine-tuned against the ATT&CK attacker
+(2026-09-28, `defend_attack_s2_rf50/`).** Warm-starting a defender from the
+g0_s2 seed (gamma 0) and co-training it against the ATT&CK attacker, with
+**50% of every batch drawn from real traffic** (`--real-frac 0.5`) to avoid
+the real-distribution drift that sank the earlier joint-training runs, drives
+the attacker to **−0.006**: it can no longer win with T1571 or exfil (both
+caught 1.00 in self-play) and retreats to sending benign cover traffic. On
+*real* test data the fine-tuned defender (ep950) actually **improves**
+detection over v8.1 — IoT-23 34-1 RECON 0.92 → **0.99**, C2 0.97 → **1.00**,
+DOS 1.00; live2026 and MTA-2026 stay FP 0.00 with C2/OTHER 1.00. The cost is
+clean-web false positives: held-out web FP rises **0.01 → 0.08** (mostly the
+soft `LOG_ALERT`, not blocks), and it settled there — earlier checkpoints were
+higher (ep500 0.17 → ep950 0.08).
+
+Honest verdict: this is a **research result, not yet a deployment upgrade**.
+Fine-tuning against the ATT&CK attacker demonstrably closes the self-play
+holes and lifts real-attack detection, but an 8× clean-web FP is too high to
+ship over v8.1. It confirms the diagnosis: the exfil / odd-port gaps are
+better closed with **real captures** of those techniques (per the T1571 data
+gap) than by teaching a defender to fear large or off-443 sessions on a
+synthetic stream. The ATT&CK attacker's value is precisely this — it turns
+"the defender seems robust" into a named list of techniques to detect and
+data to collect.
 
 ## Caveats / what a v2 should improve
 

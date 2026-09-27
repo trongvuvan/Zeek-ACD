@@ -1,6 +1,6 @@
 # Tiến trình zeek-acd
 
-Cập nhật: 2026-09-27. Dùng file này để tiếp tục ở phiên sau.
+Cập nhật: 2026-09-28. Dùng file này để tiếp tục ở phiên sau.
 
 ## Cập nhật mới nhất (2026-09-27): **attacker dùng MITRE ATT&CK + vote-quorum**
 
@@ -53,9 +53,25 @@ không đạt 3/6 → không bị chặn → nguồn không bị suppress → at
 Đừng đổi default sang `vote3` chỉ dựa vào số cổ điển. Ưu tiên: **phát hiện T1041
 exfil** (feature byte-volume / payoff riêng cho exfil) — kỹ thuật trội ở cả hai agg.
 
-Việc tiếp theo: (a) train defender chống attacker ATT&CK (xen kẽ episode dữ liệu
-thật để không hỏng phân phối thật); (b) thêm dữ liệu C2 cổng-lẻ/jitter + exfil;
-(c) cân nhắc payoff/feature nhắm T1041.
+**Defender fine-tune chống attacker ATT&CK** (`checkpoints/defend_attack_s2_rf50/`,
+2026-09-28 — vòng train cuối phiên này): warm-start từ g0_s2 (gamma 0), co-train
+với attacker ATT&CK, **50% batch từ dữ liệu thật** (`--real-frac 0.5`) để không
+trôi phân phối thật. Attacker bị đẩy về **−0.006** (bỏ tấn công, chuyển sang
+T1071.blend); trong self-play T1571 và exfil giờ bị bắt 1.00. Trên dữ liệu THẬT
+(checkpoint ep950): phát hiện *tăng* — IoT-23 34-1 RECON 0.92→**0.99**, C2
+0.97→**1.00**, DOS 1.00; live2026/MTA-2026 FP 0.00, det 1.00. Giá phải trả: FP
+web held-out 0.01→**0.08** (chủ yếu LOG_ALERT mềm; ep500 0.17 → ep950 0.08).
+
+**Kết luận trung thực:** đây là kết quả nghiên cứu, **chưa phải bản deploy tốt hơn
+v8.1** — FP web gấp 8 lần là quá cao để thay v8.1. Nó xác nhận chẩn đoán: lỗ hổng
+exfil/cổng-lẻ nên bịt bằng **capture thật** các kỹ thuật đó (theo phát hiện T1571),
+không phải dạy defender sợ phiên to/khác-443 trên dòng tổng hợp. **v8.1 vẫn là bản
+khuyến nghị.** Giá trị của attacker ATT&CK: biến "defender có vẻ bền" thành danh
+sách kỹ thuật cụ thể cần phát hiện + dữ liệu cần thu thập.
+
+Việc tiếp theo (phiên sau): (a) thu thập C2 cổng-lẻ/jitter + exfil thật rồi trộn
+vào train; (b) feature byte-volume / payoff riêng cho T1041 exfil; (c) re-attack
+bản ATT&CK-hardened bằng attacker ATT&CK mới (frozen) để kiểm chứng lỗ hổng đã đóng.
 
 ## Cập nhật mới nhất (2026-09-26, đêm): **tấn công ensemble — ensemble DỄ bị khai thác hơn 1 seed**
 
