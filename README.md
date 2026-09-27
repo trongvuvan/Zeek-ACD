@@ -148,6 +148,7 @@ src/zeek_acd/
   replay_buffer.py
   context.py         cross-flow rolling statistics (offline + live)
   dqn.py              plain single-agent DQN (defender or self-play attacker)
+  attack.py           MITRE ATT&CK technique catalog = the attacker's action space
   selfplay.py         two-sided environment where both players learn
   iocs.py             defanged IOC report -> matchable indicator set
   pcap_dataset.py      scenario pcaps / live logs -> labeled Zeek data
@@ -348,6 +349,10 @@ the payoff table, not the model.
 The attacker picks a traffic class and an evasion mode (`none`, `jitter`,
 `slow`, `spread`, `pad`); its reward is the defender's loss. Against a frozen
 defender its average reward measures how exploitable that defender is.
+`--attacker attack` swaps this coarse 5×5 grid for a **MITRE ATT&CK
+technique catalog** (see "The attacker's action space" below), so the
+defender is probed with distinct named techniques rather than one lumped
+class per tactic.
 
 | run | dir | defender | attacker result | takeaway |
 |---|---|---|---|---|
@@ -365,6 +370,8 @@ defender its average reward measures how exploitable that defender is.
 | vs v8 seed 2, big mix | `selfplay_g0s2frozen_bigmix/` | g0_s2, frozen, 1000 ep, full IoT-23 + MTA + benign (174k records, no per-file cap) | max +0.049; suppressed 0.84–0.98 the whole run; settles on `jitter`/`spread`/`slow` with the attacker mostly blocked | control for the ensemble row below — a single seed keeps the attacker suppressed even on the larger mix |
 | **vs v8.1 ensemble, long** | `selfplay_v81ensemblefrozen_long/` | the **deployed 6-model ensemble** (`ensemble.load_ensemble`, `mean`), frozen, 1000 ep, same 174k mix | max **+0.123** (2.5× the single seed above); suppression falls to **0.35–0.54**; the attacker mixes padded/jittered C2/DOS/OTHER_MAL (ensemble detection on the evaded stream drops to 0.35–0.50) with a flood of padded/jittered BENIGN (ensemble acts on 0.09–0.22 of it) | **the Q-averaged ensemble is *more* exploitable by an adaptive attacker than any single seed** — see below |
 | vs ensemble, `vote` | `selfplay_v81ens_vote_long/` | 6-model ensemble, **majority vote-to-block**, frozen, 1000 ep, same mix | max +0.047; suppression holds 0.62–0.98 | vote-to-block restores the hard block; ~halves the exploit and keeps real FP lowest (now the default) |
+| vs ensemble, `vote2` | `selfplay_v81ens_vote2_long/` | 6-model ensemble, **vote quorum ≥2** to block, frozen, 1000 ep, same mix | max +0.041; suppression holds 0.62–0.98 | quorum-2 is a touch more robust than plain `vote` at ≤0.01 real FP |
+| vs ensemble, `vote3` | `selfplay_v81ens_vote3_long/` | 6-model ensemble, **vote quorum ≥3** (true majority) to block, frozen, 1000 ep, same mix | max +0.031; suppression holds 0.74–0.97; real FP 0.00, detection unchanged | most robust aggregation measured; best default candidate pending a live FP soak |
 | vs ensemble, `smax` | `selfplay_v81ens_smax_long/` | 6-model ensemble, **severity-max**, frozen, 1000 ep, same mix | max +0.064; suppression 0.65–0.99 but FP 0.30 on padded benign | too eager: the benign-FP DoS scores more against it than against `vote` |
 
 Before 2026-09-26 a "frozen" defender's normalizer kept updating on the
@@ -412,8 +419,25 @@ identical 174k / 1000-episode setup:
 | agg | real FP (held-out web) | real detection (IoT-23 34-1 RECON/DOS/C2, MTA C2/OTHER) | attacker max reward | suppression under attack |
 |---|---|---|---|---|
 | `mean` | 0.01 | 0.99 / 1.00 / 0.99, 1.00 / 1.00 | +0.123 | falls to 0.35 |
-| `vote` | **0.00** | 0.92 / 1.00 / 0.97, 1.00 / 1.00 | **+0.047** | holds 0.62–0.98 |
+| `vote` | 0.00 | 0.92 / 1.00 / 0.97, 1.00 / 1.00 | +0.047 | holds 0.62–0.98 |
+| `vote2` | 0.01 | 0.92 / 1.00 / 0.97, 1.00 / 1.00 | +0.041 | holds 0.62–0.98 |
+| `vote3` | **0.00** | 0.92 / 1.00 / 0.97, 1.00 / 1.00 | **+0.031** | **holds 0.74–0.97** |
 | `smax` | 0.04 | 1.00 / 1.00 / 1.00, 1.00 / 1.00 | +0.064 | holds 0.65–0.99 |
+
+`vote<k>` quorum aggregation (2026-09-27): `vote<k>` blocks when **≥k** of the
+six members' argmax is a suppressing action (else it falls back to plain
+majority); it's the same code path with a quorum threshold (`ensemble.py`,
+`_parse_agg`). Measured under the identical 174k / 1000-episode setup,
+raising the quorum monotonically tightens robustness: `vote2` holds the
+exploit to +0.041 and `vote3` (a true majority of six) to **+0.031** — a
+third below plain `vote` (+0.047) — while lifting the suppression floor
+(0.62 → 0.74) and keeping real FP at 0.00 with unchanged real detection
+(RECON/DOS/C2 0.92 / 1.00 / 0.97, MTA C2/OTHER 1.00 / 1.00). It costs almost
+nothing on real traffic because the six seeds already agree there; the
+quorum's real value is as a tunable FP↔robustness knob. `vote3` is now the
+better default candidate — the only reason not to flip the live default from
+`vote` to `vote3` yet is a longer real-traffic FP soak. Runs:
+`selfplay_v81ens_vote2_long/`, `selfplay_v81ens_vote3_long/`.
 
 `vote` is the best trade-off and is now the default in `run_agent.py` and
 `eval_checkpoint.py`: it roughly **halves** how much an adaptive attacker
@@ -436,6 +460,54 @@ detection stays 1.00. The only movement is the old IoT-23 34-1 capture
 (RECON 0.99 → 0.92, C2 0.99 → 0.97) and IoT-23 3-1 OTHER (0.99 → 0.98) —
 2018 botnet traffic, not the modern C2 the model is aimed at. `test_battery.sh`
 takes `AGG=vote|smax` to score the battery under either rule.
+
+### The attacker's action space: from 5×5 to a MITRE ATT&CK catalog
+
+The original self-play attacker chooses a coarse *class* (RECON / DOS / C2 /
+OTHER_MALICIOUS / BENIGN) and one of five evasion knobs — 25 actions. That
+is enough to *find* an evasion, but it treats "C2" as a single behaviour,
+whereas a real command-and-control channel can be a steady HTTPS beacon
+(T1071.001), a jittered malleable profile, a fast-flux / DGA channel that
+rotates destinations (T1568.002), or a fallback channel that goes
+low-and-slow (T1008). Those look different on the wire and a defender may
+catch some and miss others — a single "C2 detection 1.00" number hides that.
+
+`--attacker attack` replaces the grid with a catalog of MITRE ATT&CK
+techniques (`attack.py`). Each technique pins **which real Zeek records to
+draw from** (so features stay realistic and the payoff is still scored by
+class) and a **shaping profile** — timing (`steady`/`jitter`/`slow`/`burst`),
+destination (`fixed`/`spread`), port (`fixed`/`keep`/`scan`) and byte
+padding — that turns the sampled record into that technique's signature.
+The shaping vocabulary is a superset of the old evasion modes, so the two
+action spaces share one emitter (`SelfPlayACDEnv._shape`) and the classic
+5×5 space is unchanged and still the default.
+
+The catalog spans six tactics:
+
+| tactic | techniques |
+|---|---|
+| reconnaissance | T1595.001 IP-block sweep |
+| discovery | T1046 service scan, T1046.slow (low-and-slow) |
+| command-and-control | T1071.001 web beacon, T1071.001.jitter, T1571 non-standard port, T1568.002 DGA/fast-flux, T1008 fallback (low-and-slow), T1105 ingress tool transfer |
+| exfiltration | T1041 over-C2 (large upload), T1048 alt-protocol, T1030 chunked/size-limited |
+| impact | T1498 network DoS, T1499 endpoint DoS, T1498.slow slow-rate DoS |
+| defense-evasion | T1071.blend (benign cover traffic) |
+
+Eval now reports, per technique, how often the defender **responded**
+(non-`ALLOW`), how often it **suppressed** the source, and a per-tactic
+rollup — so a run shows exactly which techniques get through. Run it against
+the deployed ensemble with:
+
+```bash
+D=""; for s in 0 1 2 3 4 5; do D="$D \
+  --defender-checkpoint checkpoints/dqn_g0_s$s/agent_best.pt \
+  --defender-normalizer checkpoints/dqn_g0_s$s/normalizer_best.json"; done
+PYTHONPATH=src .venv/bin/python -m zeek_acd.train_selfplay --attacker attack \
+  --data 'data/iot23/*/conn.log.labeled' --data 'data/mta/2025-*/conn.log.labeled' \
+  --data 'data/live2025/conn.log.labeled' --data 'data/benign_web/train/conn.log.labeled' \
+  --payoff payoffs/low_fp.json --defender frozen $D --defender-agg vote \
+  --episodes 1000 --eval-every 50 --checkpoint-dir checkpoints/attack_v81ens_vote
+```
 
 ## Caveats / what a v2 should improve
 

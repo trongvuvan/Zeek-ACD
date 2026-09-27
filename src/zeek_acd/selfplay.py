@@ -69,6 +69,7 @@ from typing import Optional
 
 import numpy as np
 
+from .attack import Technique
 from .context import ConnContext
 from .features import FeatureExtractor
 from .game import (
@@ -88,8 +89,10 @@ ATTACKER_HISTORY_LEN = 10
 EVASION_MODES = ["none", "jitter", "slow", "spread", "pad"]
 BASE_GAP_SECONDS = 1.0
 SLOW_GAP_FACTOR = 25.0
+BURST_GAP_FACTOR = 0.04  # near-back-to-back connections (flooding / fast scan)
 JITTER_RANGE = (0.1, 4.0)
 PAD_FACTOR_RANGE = (3.0, 12.0)
+SCAN_PORT_RANGE = (1, 65535)  # the "scan" port mode rotates across these
 ATTACKER_SOURCE_IP = "10.0.0.66"
 SPREAD_POOL = 64  # distinct destinations the "spread" mode rotates through
 # Without evasion each class talks to one host of its own, the way a beacon
@@ -161,6 +164,7 @@ class SelfPlayACDEnv:
         training: bool = True,
         seed: Optional[int] = None,
         episode_seconds: Optional[float] = None,
+        catalog: Optional[list[Technique]] = None,
     ):
         self.pool = ClassIndexedRecords(records, seed=seed)
         self.fx = feature_extractor
@@ -177,7 +181,15 @@ class SelfPlayACDEnv:
         self.n_defender_actions = N_DEFENDER_ACTIONS
         self.n_attacker_classes = N_ATTACKER_CLASSES
         self.n_evasion_modes = len(EVASION_MODES)
-        self.n_attacker_actions = N_ATTACKER_CLASSES * len(EVASION_MODES)
+        # Two action spaces share this env. Classic: class x evasion (5x5).
+        # Catalog: one action per ATT&CK technique (see attack.py). The
+        # technique already carries its own shaping, so the evasion axis is
+        # folded into it.
+        self.catalog = catalog
+        if catalog is not None:
+            self.n_attacker_actions = len(catalog)
+        else:
+            self.n_attacker_actions = N_ATTACKER_CLASSES * len(EVASION_MODES)
         self.defender_obs_dim = self.fx.dim
         self.attacker_obs_dim = ATTACKER_OBS_DIM
 
@@ -222,36 +234,55 @@ class SelfPlayACDEnv:
         return self._attacker_obs()
 
     def decode_action(self, attacker_action: int) -> tuple[int, str]:
-        """attacker action index -> (attacker class, evasion mode name)."""
+        """attacker action index -> (attacker class, evasion mode name).
+
+        In catalog mode the "mode" slot carries the technique id, so the
+        same (class, label) reporting the eval loop does still works."""
+        if self.catalog is not None:
+            tech = self.catalog[int(attacker_action)]
+            return int(tech.base_class), tech.id
         cls = int(attacker_action) // self.n_evasion_modes
         mode = EVASION_MODES[int(attacker_action) % self.n_evasion_modes]
         return min(cls, self.n_attacker_classes - 1), mode
 
-    def _emit(self, record: dict[str, str], mode: str, cls: int) -> dict[str, str]:
-        """Builds the connection the attacker actually puts on the wire:
-        the sampled record, re-timed and re-addressed according to the
-        chosen evasion mode, then annotated with context computed over the
-        stream this environment has emitted so far."""
-        if mode == "slow":
+    def technique(self, attacker_action: int) -> Technique:
+        """The ATT&CK technique for an action (catalog mode only)."""
+        assert self.catalog is not None, "technique() needs a catalog"
+        return self.catalog[int(attacker_action)]
+
+    def _shape(self, record: dict[str, str], cls: int, *, timing: str, dest: str,
+               port: str, pad: Optional[tuple[float, float]]) -> dict[str, str]:
+        """The single emitter both action spaces share: take a sampled real
+        record and put it on the wire re-timed, re-addressed and re-sized
+        per the shaping knobs, then annotate it with context computed over
+        the stream emitted so far. ``timing``/``dest``/``port``/``pad`` are
+        the vocabulary defined in ``attack.py``."""
+        if timing == "slow":
             gap = BASE_GAP_SECONDS * SLOW_GAP_FACTOR
-        elif mode == "jitter":
+        elif timing == "burst":
+            gap = BASE_GAP_SECONDS * BURST_GAP_FACTOR
+        elif timing == "jitter":
             gap = BASE_GAP_SECONDS * float(self.rng.uniform(*JITTER_RANGE))
-        else:
+        else:  # steady
             gap = BASE_GAP_SECONDS
         self._clock += gap
 
         emitted = dict(record)
         emitted["ts"] = self._clock
         emitted["id.orig_h"] = ATTACKER_SOURCE_IP
-        emitted["id.resp_h"] = CLASS_HOST.format(cls=cls)
-        if cls != int(AttackerClass.RECON):
-            emitted["id.resp_p"] = CLASS_PORT
-        if mode == "spread":
+        if dest == "spread":
             # A different destination every time, so no single one builds up
-            # a share worth noticing.
+            # a share worth noticing (fast-flux / host sweep).
             emitted["id.resp_h"] = f"203.0.113.{int(self.rng.integers(0, SPREAD_POOL))}"
-        if mode == "pad":
-            factor = float(self.rng.uniform(*PAD_FACTOR_RANGE))
+        else:
+            emitted["id.resp_h"] = CLASS_HOST.format(cls=cls)
+        if port == "scan":
+            emitted["id.resp_p"] = str(int(self.rng.integers(*SCAN_PORT_RANGE)))
+        elif port == "fixed":
+            emitted["id.resp_p"] = CLASS_PORT
+        # port == "keep": leave the sampled record's own port untouched.
+        if pad is not None:
+            factor = float(self.rng.uniform(*pad))
             for field in ("orig_bytes", "resp_bytes", "orig_ip_bytes", "resp_ip_bytes"):
                 try:
                     emitted[field] = str(int(float(record.get(field, 0) or 0) * factor))
@@ -260,20 +291,45 @@ class SelfPlayACDEnv:
         emitted.update(self._context.update(emitted))
         return emitted
 
+    def _emit(self, record: dict[str, str], mode: str, cls: int) -> dict[str, str]:
+        """Classic 5x5 emitter: map an evasion mode onto the shared shaping
+        knobs, preserving the original behaviour exactly (RECON keeps its
+        own scanned port; every other class is pinned to 443)."""
+        return self._shape(
+            record, cls,
+            timing=mode if mode in ("slow", "jitter") else "steady",
+            dest="spread" if mode == "spread" else "fixed",
+            port="keep" if cls == int(AttackerClass.RECON) else "fixed",
+            pad=PAD_FACTOR_RANGE if mode == "pad" else None,
+        )
+
+    def _emit_technique(self, record: dict[str, str], tech: Technique,
+                        cls: int) -> dict[str, str]:
+        """Catalog emitter: shape per the technique's own profile."""
+        return self._shape(record, cls, timing=tech.timing, dest=tech.dest,
+                           port=tech.port, pad=tech.pad)
+
     def attacker_step(self, attacker_action: int):
         """Phase 1: attacker emits its chosen class. Returns
         (defender_obs, realized_class, suppressed). If suppressed, the
         traffic never reaches the defender and defender_obs is None."""
-        cls, mode = self.decode_action(attacker_action)
         suppressed = self._is_suppressed()
+        if self.catalog is not None:
+            tech = self.catalog[int(attacker_action)]
+            cls = int(tech.base_class)
+        else:
+            cls, mode = self.decode_action(attacker_action)
         if suppressed:
             # Time still passes for suppressed traffic, so hiding behind a
             # block doesn't buy the attacker extra episode.
             self._clock += BASE_GAP_SECONDS
             return None, None, True
         record, realized_class = self.pool.sample(cls)
-        defender_obs = self.fx.transform(self._emit(record, mode, realized_class),
-                                         training=self.training)
+        if self.catalog is not None:
+            emitted = self._emit_technique(record, tech, realized_class)
+        else:
+            emitted = self._emit(record, mode, realized_class)
+        defender_obs = self.fx.transform(emitted, training=self.training)
         return defender_obs, realized_class, False
 
     def defender_step(self, defender_action: int, realized_class: int):

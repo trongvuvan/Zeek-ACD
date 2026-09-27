@@ -1,6 +1,39 @@
 # Tiến trình zeek-acd
 
-Cập nhật: 2026-09-26 (tối). Dùng file này để tiếp tục ở phiên sau.
+Cập nhật: 2026-09-27. Dùng file này để tiếp tục ở phiên sau.
+
+## Cập nhật mới nhất (2026-09-27): **attacker dùng MITRE ATT&CK + vote-quorum**
+
+**Mới: không gian hành động attacker theo MITRE ATT&CK** (`src/zeek_acd/attack.py`).
+Trước đây attacker chọn `lớp × chế-độ-né` (5×5=25). Giờ `--attacker attack`
+đổi sang **catalog kỹ thuật ATT&CK** (16 kỹ thuật / 6 tactic): mỗi kỹ thuật ghim
+(a) lớp traffic thật để lấy record (feature vẫn thật, reward vẫn chấm theo lớp) và
+(b) hồ sơ tạo hình traffic — timing (`steady`/`jitter`/`slow`/`burst`), đích
+(`fixed`/`spread`), cổng (`fixed`/`keep`/`scan`), padding byte. Ví dụ:
+T1071.001 beacon web, T1568.002 DGA/fast-flux, T1008 fallback low-and-slow,
+T1046 service scan, T1498 network DoS, T1041/T1048/T1030 exfil, T1071.blend
+(traffic nguỵ trang benign). Bộ từ vựng tạo hình là **superset** của các chế độ
+né cũ → cả hai không gian hành động dùng chung một emitter (`SelfPlayACDEnv._shape`);
+đường 5×5 cũ giữ nguyên, vẫn là mặc định.
+
+Eval catalog giờ báo cáo **theo từng kỹ thuật**: defender ra tay (non-ALLOW) bao
+nhiêu, chặn (suppress) bao nhiêu, cộng rollup theo tactic — thấy đúng kỹ thuật
+nào lọt. Chạy attacker ATT&CK vs ensemble v8.1: lệnh ở README mục "The attacker's
+action space". Đã smoke-test (synthetic + 1 defender đóng băng) OK cả hai đường.
+
+**vote-quorum (`vote<k>`):** `ensemble.py` thêm `vote2`/`vote3`… — chặn khi ≥k
+thành viên có argmax là hành động dứt điểm, không đủ quorum thì về majority.
+Cùng mix 174k, 1000 ep: attacker tối đa `vote2` **+0.041**, `vote3` **+0.031**
+(vote thường +0.047), suppression floor tăng 0.62→0.74, FP thật `vote3` = 0.00,
+phát hiện không đổi (IoT-23 34-1 RECON/DOS/C2 0.92/1.00/0.97, MTA C2/OTHER
+1.00/1.00). Tăng quorum → bền hơn đơn điệu, gần như không mất gì trên traffic
+thật vì 6 seed đã đồng thuận. **`vote3` là ứng viên default tốt hơn `vote`** —
+chỉ chờ soak FP live dài hơn trước khi đổi default. Runs:
+`checkpoints/selfplay_v81ens_vote{2,3}_long/`.
+
+Việc tiếp theo: (a) chạy attacker ATT&CK đầy đủ vs ensemble `vote` để xem kỹ thuật
+nào lọt; (b) train defender chống lại chính attacker ATT&CK đó (thêm episode dữ
+liệu thật xen kẽ để không hỏng phân phối thật, như bài học self-play cũ).
 
 ## Cập nhật mới nhất (2026-09-26, đêm): **tấn công ensemble — ensemble DỄ bị khai thác hơn 1 seed**
 

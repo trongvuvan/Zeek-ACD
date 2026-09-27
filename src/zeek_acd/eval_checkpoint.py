@@ -41,10 +41,11 @@ def parse_args() -> argparse.Namespace:
                     help="repeat (with one --normalizer each) to score the Q-averaged "
                          "ensemble of several plain-DQN checkpoints")
     p.add_argument("--normalizer", required=True, action="append")
-    p.add_argument("--agg", choices=["mean", "vote", "smax"], default="mean",
-                    help="how an ensemble combines members: mean-Q (default), majority "
-                         "vote-to-block, or severity-max (block if any member would). "
-                         "Ignored for a single checkpoint")
+    p.add_argument("--agg", default="mean",
+                    help="how an ensemble combines members: mean-Q (default), 'vote' "
+                         "(majority vote-to-block), 'vote<k>' e.g. vote2 (block if >=k "
+                         "members would suppress, else majority), or 'smax' (block if "
+                         "any member would). Ignored for a single checkpoint")
     p.add_argument("--data", required=True, help="glob for conn.log.labeled files")
     p.add_argument("--max-records-per-file", type=int, default=None)
     p.add_argument("--mode", choices=["flat", "env"], default="flat")

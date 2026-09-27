@@ -39,7 +39,23 @@ class RawExtractor:
 #     0        1           5          2            3            4
 _SEVERITY = {0: 0, 1: 1, 5: 2, 2: 3, 3: 4, 4: 5}
 
-AGGREGATIONS = ("mean", "vote", "smax")
+# The two actions that suppress the source for the rest of the episode
+# (game.SUPPRESSING_ACTIONS: BLOCK_SRC=3, ISOLATE_HOST=4). The vote-quorum
+# rule keys off how many members would play one of these.
+_SUPPRESSING = (3, 4)
+
+AGGREGATIONS = ("mean", "vote", "smax")  # plus "vote<k>", validated in _parse_agg
+
+
+def _parse_agg(agg: str) -> tuple[str, int]:
+    """``agg`` is ``mean``, ``smax``, ``vote`` (plain majority) or ``vote<k>``
+    (block if at least k members' argmax is a suppressing action, else fall
+    back to majority). Returns (base, quorum); quorum is 0 unless vote<k>."""
+    if agg in ("mean", "smax", "vote"):
+        return agg, 0
+    if agg.startswith("vote") and agg[4:].isdigit() and int(agg[4:]) >= 1:
+        return "vote", int(agg[4:])
+    raise SystemExit(f"--agg must be mean, vote, vote<k> (e.g. vote2), or smax; got {agg!r}")
 
 
 def load_ensemble(checkpoints: list[str], normalizers: list[str], agg: str = "mean"):
@@ -69,8 +85,7 @@ def load_ensemble(checkpoints: list[str], normalizers: list[str], agg: str = "me
     """
     if len(checkpoints) != len(normalizers):
         raise SystemExit("need one --normalizer per --checkpoint")
-    if agg not in AGGREGATIONS:
-        raise SystemExit(f"--agg must be one of {AGGREGATIONS}, got {agg!r}")
+    base, quorum = _parse_agg(agg)
     members = []
     for ckpt, norm in zip(checkpoints, normalizers):
         with open(norm) as f:
@@ -79,13 +94,17 @@ def load_ensemble(checkpoints: list[str], normalizers: list[str], agg: str = "me
     def policy(raw):
         qs = [agent.q_values(nz.normalize(raw)) for agent, nz in members]
         mean_q = np.mean(qs, axis=0)
-        if agg == "mean":
+        if base == "mean":
             action = int(mean_q.argmax())
         else:
             votes = [int(q.argmax()) for q in qs]
-            if agg == "smax":
+            if base == "smax":
                 action = max(votes, key=lambda a: _SEVERITY[a])
-            else:  # vote: most common action, ties -> more suppressing
+            elif quorum and sum(1 for v in votes if v in _SUPPRESSING) >= quorum:
+                # Enough members want to suppress: play the most severe
+                # suppressing action they picked, ignoring the softer votes.
+                action = max((v for v in votes if v in _SUPPRESSING), key=lambda a: _SEVERITY[a])
+            else:  # plain majority: most common action, ties -> more suppressing
                 counts: dict[int, int] = {}
                 for a in votes:
                     counts[a] = counts.get(a, 0) + 1

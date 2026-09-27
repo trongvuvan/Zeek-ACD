@@ -59,6 +59,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--gamma", type=float, default=0.95)
     p.add_argument("--hidden", type=int, default=128)
+    p.add_argument("--attacker", choices=["classic", "attack"], default="classic",
+                    help="attacker action space: 'classic' = 5 traffic classes x 5 "
+                         "evasion modes (default); 'attack' = the MITRE ATT&CK "
+                         "technique catalog in attack.py (T1071 web beacon, T1498 "
+                         "network DoS, T1046 service scan, T1568 fast-flux, ...), so "
+                         "the defender is probed with distinct techniques, not a "
+                         "lumped class")
     p.add_argument("--defender", choices=["vanilla", "frozen", "minimax-frozen"],
                     default="vanilla")
     p.add_argument("--defender-normalizer", type=str, action="append", default=None,
@@ -71,9 +78,9 @@ def parse_args() -> argparse.Namespace:
                          "--defender-normalizer each) to freeze and attack the "
                          "ENSEMBLE of several plain-DQN checkpoints -- the "
                          "way v8.1 is actually deployed -- rather than a single seed")
-    p.add_argument("--defender-agg", choices=["mean", "vote", "smax"], default="mean",
+    p.add_argument("--defender-agg", default="mean",
                     help="how a frozen ensemble combines members (see ensemble.py): "
-                         "mean-Q (default), majority vote-to-block, or severity-max")
+                         "mean-Q (default), 'vote', 'vote<k>' (e.g. vote2), or 'smax'")
     p.add_argument("--defender-init", type=str, default=None,
                     help="with --defender vanilla: start the trainable defender from this "
                          "plain-DQN checkpoint instead of from scratch. Self-play only "
@@ -178,6 +185,11 @@ def evaluate(env: SelfPlayACDEnv, attacker: DQNAgent, defender: DefenderPolicy,
     attacker_modes = Counter()
     per_class_seen = defaultdict(int)
     per_class_acted = defaultdict(int)
+    # catalog mode: how the defender reacted to each ATT&CK technique
+    tech_chosen = Counter()      # how often the attacker picked it
+    tech_seen = defaultdict(int)  # reached the defender (not suppressed)
+    tech_acted = defaultdict(int)  # defender responded (non-ALLOW)
+    tech_supp = defaultdict(int)  # suppressed before reaching the defender
 
     for _ in range(n_episodes):
         a_obs = env.reset()
@@ -190,16 +202,26 @@ def evaluate(env: SelfPlayACDEnv, attacker: DQNAgent, defender: DefenderPolicy,
             chosen_class, chosen_mode = env.decode_action(a_action)
             attacker_classes[chosen_class] += 1
             attacker_modes[chosen_mode] += 1
+            tid = env.technique(a_action).id if env.catalog is not None else None
+            if tid is not None:
+                tech_chosen[tid] += 1
             d_obs, realized_class, suppressed = env.attacker_step(a_action)
             if suppressed:
                 _, a_reward, a_obs, done = env.suppressed_step()
                 suppressed_steps += 1
+                if tid is not None:
+                    tech_supp[tid] += 1
             else:
                 d_action = defender.act(d_obs)
                 _, a_reward, a_obs, done = env.defender_step(d_action, realized_class)
                 per_class_seen[realized_class] += 1
-                if d_action != int(DefenderAction.ALLOW):
+                acted = d_action != int(DefenderAction.ALLOW)
+                if acted:
                     per_class_acted[realized_class] += 1
+                if tid is not None:
+                    tech_seen[tid] += 1
+                    if acted:
+                        tech_acted[tid] += 1
             total_att_reward += a_reward
             steps += 1
 
@@ -224,6 +246,29 @@ def evaluate(env: SelfPlayACDEnv, attacker: DQNAgent, defender: DefenderPolicy,
                 "seen": seen,
                 "action_rate": round(per_class_acted.get(c, 0) / seen, 3),
             }
+    if env.catalog is not None:
+        per_tech = {}
+        per_tactic_seen = defaultdict(int)
+        per_tactic_acted = defaultdict(int)
+        for tech in env.catalog:
+            seen = tech_seen.get(tech.id, 0)
+            per_tech[tech.id] = {
+                "name": tech.name,
+                "tactic": tech.tactic,
+                "chosen": tech_chosen.get(tech.id, 0),
+                "seen": seen,
+                "action_rate": round(tech_acted.get(tech.id, 0) / seen, 3) if seen else None,
+                "suppressed": tech_supp.get(tech.id, 0),
+            }
+            per_tactic_seen[tech.tactic] += seen
+            per_tactic_acted[tech.tactic] += tech_acted.get(tech.id, 0)
+        result["defender_by_technique"] = per_tech
+        result["defender_by_tactic"] = {
+            tac: {"seen": per_tactic_seen[tac],
+                  "action_rate": round(per_tactic_acted[tac] / per_tactic_seen[tac], 3)
+                  if per_tactic_seen[tac] else None}
+            for tac in per_tactic_seen
+        }
     return result
 
 
@@ -234,8 +279,20 @@ def summarize(tag: str, r: dict) -> str:
         f"defender_avg_reward={r['defender_avg_reward']:+.3f}  "
         f"suppressed={r['suppressed_fraction']:.2f}",
         f"  attacker class:   {r['attacker_class_mix']}",
-        f"  attacker evasion: {r['attacker_evasion_mix']}",
     ]
+    if "defender_by_technique" in r:
+        # Catalog mode: the evasion axis is folded into the technique, so
+        # report per-technique reaction (how often the defender responded)
+        # and a per-tactic rollup instead of the evasion histogram.
+        for tac, s in r["defender_by_tactic"].items():
+            rate = "n/a" if s["action_rate"] is None else f"{s['action_rate']:.2f}"
+            lines.append(f"    tactic {tac:20s} seen={s['seen']:5d} action_rate={rate}")
+        for tid, s in r["defender_by_technique"].items():
+            rate = "  n/a" if s["action_rate"] is None else f"{s['action_rate']:.2f}"
+            lines.append(f"      {tid:18s} chosen={s['chosen']:4d} seen={s['seen']:4d} "
+                         f"supp={s['suppressed']:4d} action_rate={rate}  {s['name']}")
+        return "\n".join(lines)
+    lines.append(f"  attacker evasion: {r['attacker_evasion_mix']}")
     for cls, s in r["defender_detection"].items():
         lines.append(f"    defender vs {cls:16s} seen={s['seen']:5d} action_rate={s['action_rate']:.2f}")
     return "\n".join(lines)
@@ -287,11 +344,19 @@ def main() -> None:
     # A loaded normalizer stays fixed: updating it here would rescale the
     # (frozen or warm-started) defender's inputs towards the synthetic stream.
     update_norm = not args.defender_normalizer
+    catalog = None
+    if args.attacker == "attack":
+        from .attack import build_catalog, tactics
+        catalog = build_catalog("attack")
+        print(f"[selfplay] attacker action space = MITRE ATT&CK catalog: "
+              f"{len(catalog)} techniques over {len(tactics(catalog))} tactics "
+              f"({', '.join(tactics(catalog))})")
     train_env = SelfPlayACDEnv(train_records, fx_train, payoff=payoff,
                                episode_length=args.episode_length, training=update_norm,
-                               seed=args.seed)
+                               seed=args.seed, catalog=catalog)
     eval_env = SelfPlayACDEnv(eval_records, fx_eval, payoff=payoff,
-                              episode_length=args.episode_length, training=False, seed=args.seed + 1000)
+                              episode_length=args.episode_length, training=False,
+                              seed=args.seed + 1000, catalog=catalog)
 
     attacker = DQNAgent(DQNConfig(
         state_dim=train_env.attacker_obs_dim, n_actions=train_env.n_attacker_actions,
